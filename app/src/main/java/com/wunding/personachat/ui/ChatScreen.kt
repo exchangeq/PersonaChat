@@ -3,6 +3,10 @@ package com.wunding.personachat.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -17,6 +21,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.runtime.collectAsState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -56,6 +62,7 @@ import com.wunding.personachat.data.MemoryEntity
 import com.wunding.personachat.data.MessageEntity
 import com.wunding.personachat.data.PersonaPack
 import com.wunding.personachat.data.SessionEntity
+import androidx.compose.material3.FilterChip
 import com.wunding.personachat.data.Settings
 import com.wunding.personachat.data.SettingsStore
 import kotlinx.coroutines.Dispatchers
@@ -76,6 +83,7 @@ fun ChatScreen(
     onDetail: (String) -> Unit,
     onMemory: (String) -> Unit,
     onSettings: () -> Unit,
+    onSwitchSession: (String) -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -91,6 +99,9 @@ fun ChatScreen(
     var shortCount by remember { mutableStateOf(0) }
     var memCount by remember { mutableStateOf(0) }
     val listState = rememberLazyListState()
+    val allSessions by app.db.dao().sessions().collectAsState(initial = emptyList())
+    var editing by remember { mutableStateOf<MessageEntity?>(null) }
+    var editText by remember { mutableStateOf("") }
 
     LaunchedEffect(sessionId) {
         session = withContext(Dispatchers.IO) { app.db.dao().session(sessionId) }
@@ -197,6 +208,18 @@ fun ChatScreen(
         },
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad)) {
+            LazyRow(
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                items(allSessions.take(8), key = { it.id }) { it ->
+                    FilterChip(
+                        selected = it.id == sessionId,
+                        onClick = { if (it.id != sessionId) onSwitchSession(it.id) },
+                        label = { Text(it.title.substringAfter("对话 ").ifBlank { it.personaName.substringBefore(" ·") }, fontSize = 10.sp) },
+                    )
+                }
+            }
             LazyColumn(
                 state = listState,
                 reverseLayout = true,
@@ -207,10 +230,10 @@ fun ChatScreen(
                 val rows = messagesState.value
                 if (streamText.isNotEmpty()) {
                     item(key = "stream") {
-                        MessageBubble(MessageEntity(sessionId = sessionId, role = "assistant", content = streamText + "▍", ts = System.currentTimeMillis()), character = session?.personaName?.substringBefore(" ·") ?: "", onCopy = { copyText(context, streamText) }, onDelete = {}, onRemember = {}, streaming = true)
+                        MessageBubble(MessageEntity(sessionId = sessionId, role = "assistant", content = streamText, ts = System.currentTimeMillis()), character = session?.personaName?.substringBefore(" ·") ?: "", onCopy = { copyText(context, streamText) }, onDelete = {}, onRemember = {}, streaming = true)
                     }
                 }
-                items(rows, key = { it.id }) { m ->
+                items(rows.reversed(), key = { it.id }) { m ->
                     MessageBubble(
                         m,
                         character = session?.personaName?.substringBefore(" ·") ?: "",
@@ -224,6 +247,7 @@ fun ChatScreen(
                                 refreshCounts()
                             }
                         },
+                        onEdit = { editing = m; editText = m.content },
                         onRegenerate = if (m.role == "assistant" && m.id == messagesState.value.lastOrNull()?.id) {
                             {
                                 scope.launch {
@@ -280,6 +304,21 @@ fun ChatScreen(
             }
         }
     }
+    editing?.let { m ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { editing = null },
+            title = { Text("编辑消息", fontSize = 15.sp) },
+            text = { OutlinedTextField(value = editText, onValueChange = { editText = it }, minLines = 4, modifier = Modifier.fillMaxWidth()) },
+            confirmButton = {
+                TextButton(onClick = {
+                    val body = editText.trim()
+                    if (body.isNotEmpty()) scope.launch { withContext(Dispatchers.IO) { app.db.dao().updateMessage(m.id, body) } }
+                    editing = null
+                }) { Text("保存") }
+            },
+            dismissButton = { TextButton(onClick = { editing = null }) { Text("取消") } },
+        )
+    }
 }
 
 private fun loadPackId(app: PersonaChatApp, s: SessionEntity): String {
@@ -293,7 +332,7 @@ private fun copyText(context: Context, text: String) {
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(m: MessageEntity, character: String, onCopy: () -> Unit, onDelete: () -> Unit, onRemember: () -> Unit, onRegenerate: (() -> Unit)? = null, streaming: Boolean = false) {
+private fun MessageBubble(m: MessageEntity, character: String, onCopy: () -> Unit, onDelete: () -> Unit, onRemember: () -> Unit, onEdit: (() -> Unit)? = null, onRegenerate: (() -> Unit)? = null, streaming: Boolean = false) {
     var menu by remember { mutableStateOf(false) }
     val user = m.role == "user"
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
@@ -305,12 +344,25 @@ private fun MessageBubble(m: MessageEntity, character: String, onCopy: () -> Uni
                 modifier = Modifier.fillMaxWidth(0.86f).combinedClickable(onClick = {}, onLongClick = { menu = true }),
             ) {
                 Column(Modifier.padding(horizontal = 11.dp, vertical = 8.dp)) {
-                    Text(m.content, fontSize = 13.5.sp, lineHeight = 19.sp, color = MaterialTheme.colorScheme.onSurface)
+                    Row {
+                        Text(m.content, fontSize = 13.5.sp, lineHeight = 19.sp, color = MaterialTheme.colorScheme.onSurface)
+                        if (streaming) {
+                            val blink = rememberInfiniteTransition(label = "cursor")
+                            val a by blink.animateFloat(
+                                initialValue = 1f, targetValue = 0.15f,
+                                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                                    tween(500), RepeatMode.Reverse
+                                ), label = "cursorAlpha",
+                            )
+                            Text("▍", fontSize = 13.5.sp, color = MaterialTheme.colorScheme.primary.copy(alpha = a))
+                        }
+                    }
                     Text(SimpleDateFormat("HH:mm", Locale.US).format(Date(m.ts)), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
                 }
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 DropdownMenuItem(text = { Text("复制", fontSize = 12.sp) }, onClick = { menu = false; onCopy() })
+                if (onEdit != null) DropdownMenuItem(text = { Text("编辑这条", fontSize = 12.sp) }, onClick = { menu = false; onEdit() })
                 if (!user) {
                     DropdownMenuItem(text = { Text("加入永久记忆", fontSize = 12.sp) }, onClick = { menu = false; onRemember() })
                     DropdownMenuItem(text = { Text("重新生成", fontSize = 12.sp) }, onClick = { menu = false; onRegenerate?.invoke() })
