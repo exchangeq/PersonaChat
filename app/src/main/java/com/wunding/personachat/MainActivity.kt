@@ -22,6 +22,7 @@ class PersonaChatApp : android.app.Application() {
         super.onCreate()
         db = openDb(this)
         com.wunding.personachat.data.DeviceLlm.init(this)
+        com.wunding.personachat.data.GgufLlm.init(this)
     }
 }
 
