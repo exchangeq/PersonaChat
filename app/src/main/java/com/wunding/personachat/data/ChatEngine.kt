@@ -48,6 +48,15 @@ object ChatEngine {
 
     fun send(settings: Settings, system: String, history: List<MessageEntity>, userText: String): Flow<String> =
         flow {
+            if (settings.backend == "device" && settings.localModelPath.endsWith(".gguf", true)) {
+                val msgs = history.takeLast(16).map { (if (it.role == "user") "user" else "assistant") to it.content }
+                GgufLlm.stream(
+                    system, msgs, userText,
+                    maxTokens = settings.maxTokens,
+                    temperature = settings.temperature,
+                ).collect { emit(it) }
+                return@flow
+            }
             if (settings.backend == "device") {
                 val prompt = DeviceLlm.wrapPrompt(
                     settings.localModelPath.substringAfterLast('/'),
