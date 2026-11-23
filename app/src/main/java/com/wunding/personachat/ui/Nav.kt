@@ -42,6 +42,7 @@ fun PersonaNav(app: PersonaChatApp) {
                 onDetail = { pid -> nav.navigate("detail/" + android.net.Uri.encode(pid)) },
                 onMemory = { id -> nav.navigate("memory/" + android.net.Uri.encode(id)) },
                 onSettings = { nav.navigate("settings") },
+                onSwitchSession = { sid -> nav.navigate("chat/" + android.net.Uri.encode(sid)) },
             )
         }
         composable("memory/{sid}") { back ->
