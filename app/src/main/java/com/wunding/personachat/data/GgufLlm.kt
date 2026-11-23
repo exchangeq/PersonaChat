@@ -2,8 +2,10 @@ package com.wunding.personachat.data
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
@@ -99,7 +101,7 @@ object GgufLlm {
         }
         close()
         awaitClose { }
-    }.flowOn(Dispatchers.IO)
+    }.buffer(Channel.UNLIMITED).flowOn(Dispatchers.IO)
 
     class TokenSink(val cb: (String) -> Unit) {
         @Suppress("unused")
