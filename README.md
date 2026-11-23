@@ -4,7 +4,7 @@
 
 ## 功能
 
-- **手机上跑的本地 AI**：MediaPipe LLM（`.task` 模型，推荐 Gemma 1B int4；支持 GPU / CPU 切换），模型导入后完全离线。
+- **手机上跑的本地 AI**：双引擎——`.task` 走 MediaPipe（Gemma 1B int4，GPU/CPU 可切）；`.gguf` 走 llama.cpp（Qwen / Llama / Gemma / Phi 等，纯 CPU，自动用模型内置对话模板，逐 token 流式、可中断）。模型导入后完全离线。
 - **API AI**：任意 OpenAI 兼容服务；请求带 3 次指数退避重试，流式失败自动退回一次性请求。
 - **人设包**：`.aist` / zip（`AI.md` + 主设定 + 扩展包）、SillyTavern PNG 角色卡、JSON 角色卡；支持搜索、手写创建、本地导入、远程 530 包下载（raw → jsDelivr → fastly 三源回退）。
 - **记忆**：永久 / 长期 / 短期，关键词召回 + 检索测试面板。
@@ -22,4 +22,8 @@ JAVA_HOME=<jdk17> ANDROID_HOME=<sdk> gradle --no-daemon assembleRelease
 
 ## 本地模型
 
-设置 → 模型接入 → 手机本地 → 导入 `.task` → 选 GPU/CPU → 加载 → 连接测试。模型不随 APK 分发。
+设置 → 模型接入 → 手机本地 → 导入模型 → 加载 → 连接测试。模型不随 APK 分发。
+
+- `.task`：MediaPipe，推荐 Gemma 1B int4，可选 GPU/CPU。
+- `.gguf`：llama.cpp，官方 Android arm64 预编译库 + 自写 JNI（`app/src/main/cpp/gguf_jni.cpp`，产物 `libpersonagguf.so`）。推荐 **Q4_K_M、1~2B 参数**；上下文 2048、线程 4、CPU 推理。仅 `arm64-v8a`。
+- GGUF 优先用模型自带 chat template，没有模板时回退 `system + User/Assistant` 纯文本；`停止生成` 通过 native 原子标志在下一个 token 生效。
