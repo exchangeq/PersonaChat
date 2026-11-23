@@ -103,8 +103,8 @@ fun SplashScreen(onDone: () -> Unit) {
             verticalArrangement = Arrangement.Center,
         ) {
             Box(Modifier.padding(bottom = 28.dp)) { AppIconCanvas(size = 88.dp) }
-            Text("人设对话", fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFE8ECEB), modifier = Modifier.padding(bottom = 10.dp))
-            Text("把设定写进对话里", fontSize = 12.sp, color = Color(0xFF6C7875))
+            Text("PersonaChat", fontSize = 26.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFFE8ECEB), modifier = Modifier.padding(bottom = 10.dp))
+            Text("人设对话 · 把设定写进对话里", fontSize = 12.sp, color = Color(0xFF6C7875))
 
             Spacer(Modifier.height(120.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
