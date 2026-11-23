@@ -1,5 +1,13 @@
 # 更新日志
 
+## v1.2.0
+
+- 新增手机本地 GGUF 大模型：llama.cpp 官方 Android arm64 预编译库 + 自写 JNI，与 MediaPipe `.task` 并存。
+- 设置里的模型路径同时接受 `.task` / `.gguf`，按后缀自动选引擎；导入、加载、连接测试统一。
+- GGUF 自动套用内置 chat template（Qwen / Llama / Gemma / Phi），无模板回退纯文本；逐 token 流式输出。
+- 支持「停止生成」即时中断（native 原子取消标志）。
+- APK 仅保留 arm64-v8a，体积 58MB → 32MB；版本 1.2.0 / code 5，签名不变。
+
 ## v1.1.0
 
 - 本地 AI 改为真正跑在手机上：MediaPipe LLM（Gemma `.task`），GPU/CPU 可选，离线可用。
