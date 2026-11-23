@@ -277,7 +277,7 @@ fun ChatScreen(
                     fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f),
                 )
                 TextButton(onClick = { onMemory(sessionId) }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("管理记忆", fontSize = 10.sp) }
-                if (sending) TextButton(onClick = { job?.cancel(); job = null }) { Text("停止生成", fontSize = 10.sp, color = MaterialTheme.colorScheme.error) }
+                if (sending) TextButton(onClick = { com.wunding.personachat.data.GgufLlm.cancel(); job?.cancel(); job = null }) { Text("停止生成", fontSize = 10.sp, color = MaterialTheme.colorScheme.error) }
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
