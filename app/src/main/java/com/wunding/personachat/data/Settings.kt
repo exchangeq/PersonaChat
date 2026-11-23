@@ -27,6 +27,10 @@ data class Settings(
     val theme: String = "dark",          // dark / light / system
     val accent: String = "green",        // green / amber
     val personaRepo: String = "exchangeq/PocketForge-Personas",
+    /** 手机本地模型（MediaPipe .task 文件）绝对路径 */
+    val localModelPath: String = "",
+    val localBackend: String = "gpu",   // gpu / cpu
+    val updateRepo: String = "exchangeq/PersonaChat",
 )
 
 object SettingsStore {
@@ -45,6 +49,9 @@ object SettingsStore {
         val theme = stringPreferencesKey("theme")
         val accent = stringPreferencesKey("accent")
         val repo = stringPreferencesKey("persona_repo")
+        val localModel = stringPreferencesKey("local_model")
+        val localBackend = stringPreferencesKey("local_backend")
+        val updateRepo = stringPreferencesKey("update_repo")
     }
 
     fun flow(context: Context): Flow<Settings> = context.dataStore.data.map { p ->
@@ -63,6 +70,9 @@ object SettingsStore {
             theme = p[K.theme] ?: "dark",
             accent = p[K.accent] ?: "green",
             personaRepo = p[K.repo] ?: "exchangeq/PocketForge-Personas",
+            localModelPath = p[K.localModel] ?: "",
+            localBackend = p[K.localBackend] ?: "gpu",
+            updateRepo = p[K.updateRepo] ?: "exchangeq/PersonaChat",
         )
     }
 
@@ -82,6 +92,9 @@ object SettingsStore {
             p[K.theme] = s.theme
             p[K.accent] = s.accent
             p[K.repo] = s.personaRepo
+            p[K.localModel] = s.localModelPath
+            p[K.localBackend] = s.localBackend
+            p[K.updateRepo] = s.updateRepo
         }
     }
 }
