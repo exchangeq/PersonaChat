@@ -244,6 +244,9 @@ fun ChatScreen(
                     if (lastText.isNotBlank()) send(lastText, appendUser = false) else send(input, appendUser = false)
                 }, onSettings = onSettings, modifier = Modifier.padding(horizontal = 12.dp))
             }
+            if (session?.archived == true) {
+                Text("已归档人设：重新导入相同包后可继续对话；当前只读查看历史。", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp))
+            }
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     if (settings.memoryEnabled) "记忆：开 · 短期 $shortCount 条 · 长期 $memCount 条" else "纯净模式：仅人设注入",
@@ -255,6 +258,7 @@ fun ChatScreen(
             Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
                     value = input, onValueChange = { input = it },
+                    enabled = session?.archived != true,
                     modifier = Modifier.weight(1f).heightIn(min = 44.dp, max = 120.dp),
                     placeholder = { Text(if (session?.fullMode == true) "说点什么…" else "纯净模式：只注入人设…", fontSize = 12.sp) },
                     maxLines = 5,
@@ -266,7 +270,7 @@ fun ChatScreen(
                     color = if (sending || input.isBlank()) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primary,
                     shape = RoundedCornerShape(50),
                 ) {
-                    IconButton(onClick = { send(input) }, enabled = !sending && input.isNotBlank()) {
+                    IconButton(onClick = { send(input) }, enabled = !sending && input.isNotBlank() && session?.archived != true) {
                         Icon(Icons.AutoMirrored.Filled.Send, "发送", tint = if (sending || input.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onPrimary)
                     }
                 }
