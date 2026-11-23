@@ -80,7 +80,8 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
                 runCatching {
                     withContext(Dispatchers.IO) {
                         val dir = java.io.File(context.filesDir, "models").apply { mkdirs() }
-                        val f = java.io.File(dir, "model.task")
+                        val ext = if (uri.toString().endsWith("gguf", true)) ".gguf" else ".task"
+                        val f = java.io.File(dir, "model$ext")
                         context.contentResolver.openInputStream(uri)?.use { input -> f.outputStream().use { input.copyTo(it) } }
                         f.absolutePath
                     }
@@ -113,21 +114,36 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
                 }
                 Text(
                     when (s.backend) {
-                        "device" -> "手机本地：模型在手机上跑（MediaPipe .task，推荐 Gemma 1B int4）；导入一次后完全离线，不联网。"
+                        "device" -> "手机本地：.task 走 MediaPipe（Gemma 1B int4 / GPU），.gguf 走 llama.cpp（Qwen、Llama、Gemma、Phi 等，纯 CPU）；导入一次后完全离线。"
                         "local" -> "本地服务：Ollama / llama.cpp 的 OpenAI 兼容端口，默认 127.0.0.1:11434/v1（需在 Termux 里跑）。"
                         else -> "API：任意 OpenAI 兼容服务，Base URL 要带 /v1。"
                     },
                     fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 if (s.backend == "device") {
-                    OutlinedTextField(value = s.localModelPath, onValueChange = { s = s.copy(localModelPath = it) }, label = { Text("本地模型路径（.task）", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = s.localModelPath, onValueChange = { s = s.copy(localModelPath = it) }, label = { Text("本地模型路径（.task / .gguf）", fontSize = 10.sp) },
+                        placeholder = { Text("导入后自动填入；GGUF 推荐 Q4_K_M、1~2B 参数", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         FilterChip(selected = s.localBackend == "gpu", onClick = { s = s.copy(localBackend = "gpu") }, label = { Text("GPU", fontSize = 10.5.sp) })
                         FilterChip(selected = s.localBackend == "cpu", onClick = { s = s.copy(localBackend = "cpu") }, label = { Text("CPU（老处理器）", fontSize = 10.5.sp) })
-                        TextButton(onClick = { modelPicker.launch(arrayOf("*/*")) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) { Text("导入 .task", fontSize = 10.5.sp) }
-                        TextButton(onClick = { scope.launch { deviceMsg = withContext(Dispatchers.IO) { com.wunding.personachat.data.DeviceLlm.load(s.localModelPath, s.localBackend) } } }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) { Text("加载", fontSize = 10.5.sp) }
+                        TextButton(onClick = { modelPicker.launch(arrayOf("*/*")) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) { Text("导入模型", fontSize = 10.5.sp) }
+                        TextButton(onClick = {
+                            scope.launch {
+                                deviceMsg = "加载中…（大模型可能要 10~60 秒）"
+                                deviceMsg = withContext(Dispatchers.IO) {
+                                    if (s.localModelPath.endsWith(".gguf", true)) com.wunding.personachat.data.GgufLlm.load(s.localModelPath, 4)
+                                    else com.wunding.personachat.data.DeviceLlm.load(s.localModelPath, s.localBackend)
+                                }
+                            }
+                        }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) { Text("加载", fontSize = 10.5.sp) }
                     }
-                    Text(deviceMsg.ifBlank { com.wunding.personachat.data.DeviceLlm.status() }, fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(
+                        deviceMsg.ifBlank {
+                            if (s.localModelPath.endsWith(".gguf", true)) com.wunding.personachat.data.GgufLlm.status()
+                            else com.wunding.personachat.data.DeviceLlm.status()
+                        },
+                        fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                     OutlinedTextField(value = s.model, onValueChange = { s = s.copy(model = it) }, label = { Text("模型标签（用于判断对话模板）", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 } else {
                     OutlinedTextField(value = s.baseUrl, onValueChange = { s = s.copy(baseUrl = it) }, label = { Text("Base URL", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -139,10 +155,18 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
                         testing = true; testMsg = ""
                         scope.launch {
                             if (s.backend == "device") {
-                                val loadMsg = withContext(Dispatchers.IO) { com.wunding.personachat.data.DeviceLlm.load(s.localModelPath, s.localBackend) }
+                                val gguf = s.localModelPath.endsWith(".gguf", true)
+                                val loadMsg = withContext(Dispatchers.IO) {
+                                    if (gguf) com.wunding.personachat.data.GgufLlm.load(s.localModelPath, 4)
+                                    else com.wunding.personachat.data.DeviceLlm.load(s.localModelPath, s.localBackend)
+                                }
                                 testMsg = loadMsg
                                 if (!loadMsg.startsWith("失败")) {
-                                    runCatching { withContext(Dispatchers.IO) { com.wunding.personachat.data.DeviceLlm.generate("回复：OK") } }
+                                    runCatching {
+                                        withTimeout(120000) {
+                                            ChatEngine.send(s, "你是连接测试助手，只回复 OK", emptyList(), "回复 OK").first()
+                                        }
+                                    }
                                         .onSuccess { testMsg = "本地生成成功：" + it.take(30) }
                                         .onFailure { testMsg = "本地生成失败：" + (it.message ?: "") }
                                 }
