@@ -4,6 +4,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.firstOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
@@ -47,65 +48,108 @@ object ChatEngine {
 
     fun send(settings: Settings, system: String, history: List<MessageEntity>, userText: String): Flow<String> =
         flow {
-            val base = settings.baseUrl.trim().trimEnd('/')
-            val url = if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
-            val body = JSONObject().apply {
-                put("model", settings.model.ifBlank { "llama3.1" })
-                put("temperature", settings.temperature.toDouble())
-                put("max_tokens", settings.maxTokens)
-                put("stream", settings.stream)
-                put("messages", JSONArray().apply {
-                    put(JSONObject().put("role", "system").put("content", system))
-                    history.takeLast(16).forEach { m ->
-                        put(JSONObject().put("role", if (m.role == "user") "user" else "assistant").put("content", m.content))
+            if (settings.backend == "device") {
+                val prompt = DeviceLlm.wrapPrompt(
+                    settings.localModelPath.substringAfterLast('/'),
+                    system,
+                    history.takeLast(12).map { it.role to it.content },
+                    userText,
+                )
+                val full = DeviceLlm.generate(prompt)
+                full.chunked(8).forEach { emit(it); kotlinx.coroutines.delay(18) }
+                return@flow
+            }
+            var emitted = false
+            var lastError: Exception? = null
+            for (attempt in 0..2) {
+                if (attempt > 0) kotlinx.coroutines.delay(if (attempt == 1) 600L else 1500L)
+                try {
+                    requestFlow(settings, system, history, userText, streamMode = settings.stream).collect { chunk ->
+                        emitted = true
+                        emit(chunk)
                     }
-                    put(JSONObject().put("role", "user").put("content", userText))
-                })
-            }
-
-            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                connectTimeout = 15000
-                readTimeout = 60000
-                doOutput = true
-                setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("Accept", if (settings.stream) "text/event-stream" else "application/json")
-                if (settings.apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
-            }
-            try {
-                conn.outputStream.use { it.write(body.toString().toByteArray()) }
-                if (conn.responseCode !in 200..299) {
-                    val err = conn.errorStream?.bufferedReader()?.readText()?.take(300).orEmpty()
-                    throw IllegalStateException(describe(conn.responseCode, err))
-                }
-                if (!settings.stream) {
-                    val text = conn.inputStream.bufferedReader().readText()
-                    val content = JSONObject(text).optJSONArray("choices")?.optJSONObject(0)
-                        ?.optJSONObject("message")?.optString("content").orEmpty()
-                    if (content.isNotBlank()) emit(content) else throw IllegalStateException("模型没有返回内容")
                     return@flow
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError = e
+                    // 已经吐过字就不再重试，避免重复内容
+                    if (emitted) throw e
                 }
-                val reader: BufferedReader = conn.inputStream.bufferedReader()
-                var got = false
-                reader.lineSequence().forEach { line ->
-                    val t = line.trim()
-                    if (t.startsWith("data:")) {
-                        val payload = t.removePrefix("data:").trim()
-                        if (payload != "[DONE]") {
-                            runCatching {
-                                JSONObject(payload).optJSONArray("choices")?.optJSONObject(0)
-                                    ?.optJSONObject("delta")?.optString("content")
-                            }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { emit(it); got = true }
-                        }
+            }
+            // 流式始终拿不到内容时，退回一次性请求再试一次
+            runCatching {
+                val text = requestFlow(settings, system, history, userText, streamMode = false).firstOrNull()
+                if (!text.isNullOrBlank()) { emit(text); return@flow }
+            }
+            throw lastError ?: IllegalStateException("模型没有返回内容")
+        }.flowOn(Dispatchers.IO)
+
+    private fun requestFlow(
+        settings: Settings,
+        system: String,
+        history: List<MessageEntity>,
+        userText: String,
+        streamMode: Boolean,
+    ): Flow<String> = flow {
+        val base = settings.baseUrl.trim().trimEnd('/')
+        val url = if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
+        val body = JSONObject().apply {
+            put("model", settings.model.ifBlank { "llama3.1" })
+            put("temperature", settings.temperature.toDouble())
+            put("max_tokens", settings.maxTokens)
+            put("stream", streamMode)
+            put("messages", JSONArray().apply {
+                put(JSONObject().put("role", "system").put("content", system))
+                history.takeLast(16).forEach { m ->
+                    put(JSONObject().put("role", if (m.role == "user") "user" else "assistant").put("content", m.content))
+                }
+                put(JSONObject().put("role", "user").put("content", userText))
+            })
+        }
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            requestMethod = "POST"
+            connectTimeout = 12000
+            readTimeout = 90000
+            doOutput = true
+            setRequestProperty("Content-Type", "application/json")
+            setRequestProperty("Accept", if (streamMode) "text/event-stream" else "application/json")
+            if (settings.apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
+        }
+        try {
+            conn.outputStream.use { it.write(body.toString().toByteArray()) }
+            if (conn.responseCode !in 200..299) {
+                val err = conn.errorStream?.bufferedReader()?.readText()?.take(300).orEmpty()
+                throw IllegalStateException(describe(conn.responseCode, err))
+            }
+            if (!streamMode) {
+                val text = conn.inputStream.bufferedReader().readText()
+                val content = JSONObject(text).optJSONArray("choices")?.optJSONObject(0)
+                    ?.optJSONObject("message")?.optString("content").orEmpty()
+                if (content.isNotBlank()) emit(content) else throw IllegalStateException("模型没有返回内容")
+                return@flow
+            }
+            val reader: BufferedReader = conn.inputStream.bufferedReader()
+            var got = false
+            reader.lineSequence().forEach { line ->
+                val t = line.trim()
+                if (t.startsWith("data:")) {
+                    val payload = t.removePrefix("data:").trim()
+                    if (payload != "[DONE]") {
+                        runCatching {
+                            JSONObject(payload).optJSONArray("choices")?.optJSONObject(0)
+                                ?.optJSONObject("delta")?.optString("content")
+                        }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { emit(it); got = true }
                     }
                 }
-                if (!got) throw IllegalStateException("模型返回为空，检查模型名或接口地址")
-            } catch (e: SocketTimeoutException) {
-                throw IllegalStateException("连接超时：本地模型可能没启动，或地址/端口不对")
-            } catch (e: UnknownHostException) {
-                throw IllegalStateException("域名解析失败：检查网络或 Base URL")
-            } finally { conn.disconnect() }
-        }.flowOn(Dispatchers.IO)
+            }
+            if (!got) throw IllegalStateException("模型返回为空，检查模型名或接口地址")
+        } catch (e: SocketTimeoutException) {
+            throw IllegalStateException("连接超时：本地模型可能没启动，或地址/端口不对")
+        } catch (e: UnknownHostException) {
+            throw IllegalStateException("域名解析失败：检查网络或 Base URL")
+        } finally { conn.disconnect() }
+    }
 
     private fun describe(code: Int, err: String): String = when (code) {
         401, 403 -> "鉴权失败（401/403）：检查 API Key"
