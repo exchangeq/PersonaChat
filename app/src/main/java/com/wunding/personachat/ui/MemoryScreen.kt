@@ -116,6 +116,24 @@ fun MemoryScreen(app: PersonaChatApp, sessionId: String, onBack: () -> Unit) {
                 onDelete = { m -> scope.launch { withContext(Dispatchers.IO) { app.db.dao().deleteMemory(m.id) } } },
                 extra = { TextButton(onClick = { scope.launch { withContext(Dispatchers.IO) { app.db.dao().clearShort(sessionId) } } }) { Text("清空短期", fontSize = 9.5.sp) } },
             )
+            var q by remember { mutableStateOf("") }
+            var hit by remember { mutableStateOf<List<Triple<String, Int, String>>>(emptyList()) }
+            Column(Modifier.fillMaxWidth().padding(vertical = 6.dp).background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp)).padding(12.dp)) {
+                Text("检索测试", fontSize = 11.5.sp, fontWeight = FontWeight.Medium)
+                Text("输入一句话，看当前会召回哪几条、命中方式是什么。", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(value = q, onValueChange = { q = it }, label = { Text("测试一句", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                TextButton(onClick = {
+                    val tokens = q.split(Regex("[\\s，。！？、,.!?；;：:]+")).filter { it.length >= 2 }
+                    val scored = mems.map { m ->
+                        val hits = tokens.count { m.content.contains(it) }
+                        Triple(m.content, hits, if (hits > 0) "关键词 ×$hits" else "兜底（最近）")
+                    }.sortedByDescending { it.second }.take(settings.recallK)
+                    hit = scored
+                }) { Text("跑一次召回", fontSize = 10.5.sp) }
+                hit.forEachIndexed { i, h ->
+                    Text("${i + 1}. [${h.third}] ${h.first.take(80)}", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(vertical = 2.dp))
+                }
+            }
             Spacer(Modifier.size(18.dp))
         }
     }
