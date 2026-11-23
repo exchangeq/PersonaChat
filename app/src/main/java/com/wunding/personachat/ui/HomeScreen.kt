@@ -19,7 +19,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Lock
@@ -28,6 +30,8 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -35,7 +39,9 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
@@ -88,6 +94,11 @@ fun HomeScreen(
     var remoteBusy by remember { mutableStateOf("") }
     val snack = remember { SnackbarHostState() }
     var refreshKey by remember { mutableStateOf(0) }
+    var query by remember { mutableStateOf("") }
+    var showCreate by remember { mutableStateOf(false) }
+    var cName by remember { mutableStateOf("") }
+    var cPos by remember { mutableStateOf("") }
+    var cDesc by remember { mutableStateOf("") }
 
     androidx.compose.runtime.LaunchedEffect(refreshKey) {
         loading = true
@@ -125,28 +136,47 @@ fun HomeScreen(
                             }.onSuccess { remote = it }.onFailure { error = "远程清单失败：" + (it.message ?: "") }
                         }
                     }) { Icon(Icons.Filled.CloudDownload, "远程包", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    IconButton(onClick = { showCreate = true }) { Icon(Icons.Filled.Add, "创建人设", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     IconButton(onClick = { importer.launch(arrayOf("*/*")) }) { Icon(Icons.Filled.FileOpen, "导入", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    IconButton(onClick = { showCreate = true }) { Icon(Icons.Filled.Add, "创建人设", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     IconButton(onClick = onOpenSettings) { Icon(Icons.Filled.Settings, "设置", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                 },
             )
         },
     ) {
-        Column(Modifier.fillMaxSize().padding(it)) {
+        PullToRefreshBox(isRefreshing = loading, onRefresh = { refreshKey++ }, modifier = Modifier.fillMaxSize().padding(it)) {
+        Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("${packs.size} 个本地包", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
                 TextButton(onClick = onOpenSessions) { Text("会话列表 ›", fontSize = 11.sp) }
             }
+            OutlinedTextField(
+                value = query, onValueChange = { query = it },
+                placeholder = { Text("搜索角色名 / 定位 / 性格", fontSize = 11.sp) },
+                singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
+                shape = RoundedCornerShape(12.dp),
+            )
+            OutlinedTextField(
+                value = query, onValueChange = { query = it },
+                placeholder = { Text("搜索角色名 / 定位", fontSize = 11.5.sp) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
+                shape = RoundedCornerShape(10.dp),
+            )
             if (error.isNotBlank()) {
                 ErrorInlineCard(error, onRetry = { error = ""; refreshKey++ }, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
             }
             if (loading) {
                 Box(Modifier.fillMaxWidth().padding(18.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) }
             }
-            if (packs.isEmpty() && !loading) {
-                EmptyStateCanvas("还没有人设包。点右上角导入 .aist / zip，或从远程包库拉取。")
+            val visible = packs.filter { p ->
+                query.isBlank() || p.name.contains(query, true) || p.position.contains(query, true) || p.character.contains(query, true)
+            }
+            if (visible.isEmpty() && !loading) {
+                EmptyStateCanvas(if (query.isBlank()) "还没有人设包。点右上角导入 .aist / zip / PNG 角色卡，或从远程包库拉取。" else "没有匹配“$query”的包。")
             } else {
                 LazyColumn(contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(packs, key = { it.id }) { p ->
+                    items(visible, key = { it.id }) { p ->
                         PackRow(
                             pack = p,
                             onOpen = { onOpenPack(p.id) },
@@ -167,6 +197,34 @@ fun HomeScreen(
                 }
             }
         }
+        }
+    }
+
+    if (showCreate) {
+        AlertDialog(
+            onDismissRequest = { showCreate = false },
+            title = { Text("创建人设", fontSize = 16.sp) },
+            text = {
+                Column {
+                    OutlinedTextField(value = cName, onValueChange = { cName = it }, label = { Text("名字", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = cPos, onValueChange = { cPos = it }, label = { Text("定位（如 傲娇 · 猫娘）", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = cDesc, onValueChange = { cDesc = it }, label = { Text("性格、说话方式、雷点", fontSize = 10.sp) }, minLines = 4, modifier = Modifier.fillMaxWidth())
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (cName.isBlank()) return@TextButton
+                    showCreate = false
+                    scope.launch {
+                        val p = withContext(Dispatchers.IO) { PackStore.createLocal(app, cName.trim(), cPos.trim(), cDesc.trim()) }
+                        packs = withContext(Dispatchers.IO) { PackStore.list(app) }
+                        val sid = withContext(Dispatchers.IO) { startSession(app, p) }
+                        onOpenChat(sid)
+                    }
+                }) { Text("创建并开始") }
+            },
+            dismissButton = { TextButton(onClick = { showCreate = false }) { Text("取消") } },
+        )
     }
 
     preview?.let { p ->
