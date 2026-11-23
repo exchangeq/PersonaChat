@@ -129,8 +129,11 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
         prompt += "Assistant:";
     }
 
+    int train_ctx = (int) llama_model_n_ctx_train(e->model);
+    int n_ctx = train_ctx > 4096 ? 4096 : (train_ctx > 0 ? train_ctx : 2048);
+    if (n_ctx < 512) n_ctx = 512;
     llama_context_params cp = llama_context_default_params();
-    cp.n_ctx = 2048;
+    cp.n_ctx = n_ctx;
     cp.n_batch = 256;
     cp.n_threads = e->threads;
     cp.n_threads_batch = e->threads;
@@ -144,6 +147,16 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
         nt = llama_tokenize(e->vocab, prompt.c_str(), (int) prompt.size(), toks.data(), (int) toks.size(), true, true);
     }
     toks.resize(nt > 0 ? nt : 0);
+    // 防超长：完整人设模式可能上万 token，保留开头（模板/系统提示）与结尾（最近对话）
+    int cap = n_ctx - std::min<int>(maxTokens, n_ctx / 2) - 8;
+    if (cap < 256) cap = 256;
+    if ((int) toks.size() > cap) {
+        int head = std::min(256, cap / 3);
+        std::vector<llama_token> cut;
+        cut.insert(cut.end(), toks.begin(), toks.begin() + head);
+        cut.insert(cut.end(), toks.end() - (cap - head), toks.end());
+        toks.swap(cut);
+    }
 
     int pos = 0;
     bool ok = true;
