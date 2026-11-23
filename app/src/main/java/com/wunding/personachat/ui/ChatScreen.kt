@@ -87,6 +87,7 @@ fun ChatScreen(
     var streamText by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
     var job by remember { mutableStateOf<Job?>(null) }
+    var lastText by remember { mutableStateOf("") }
     var shortCount by remember { mutableStateOf(0) }
     var memCount by remember { mutableStateOf(0) }
     val listState = rememberLazyListState()
@@ -119,6 +120,7 @@ fun ChatScreen(
         if (input.isBlank() && text.isBlank() || sending) return
         val content = text.trim().ifBlank { input.trim() }
         if (content.isEmpty()) return
+        lastText = content
         sending = true; error = ""; streamText = ""; input = ""
         job = scope.launch {
             try {
@@ -222,11 +224,25 @@ fun ChatScreen(
                                 refreshCounts()
                             }
                         },
+                        onRegenerate = if (m.role == "assistant" && m.id == messagesState.value.lastOrNull()?.id) {
+                            {
+                                scope.launch {
+                                    val lastUser = withContext(Dispatchers.IO) {
+                                        app.db.dao().deleteMessage(m.id)
+                                        app.db.dao().recent(sessionId, 8).firstOrNull { it.role == "user" }
+                                    }
+                                    if (lastUser != null) send(lastUser.content, appendUser = false)
+                                }
+                            }
+                        } else null,
                     )
                 }
             }
             if (error.isNotBlank()) {
-                ErrorInlineCard(error, onRetry = { error = ""; send(input, appendUser = false) }, onSettings = onSettings, modifier = Modifier.padding(horizontal = 12.dp))
+                ErrorInlineCard(error, onRetry = {
+                    error = ""
+                    if (lastText.isNotBlank()) send(lastText, appendUser = false) else send(input, appendUser = false)
+                }, onSettings = onSettings, modifier = Modifier.padding(horizontal = 12.dp))
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -273,7 +289,7 @@ private fun copyText(context: Context, text: String) {
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(m: MessageEntity, character: String, onCopy: () -> Unit, onDelete: () -> Unit, onRemember: () -> Unit, streaming: Boolean = false) {
+private fun MessageBubble(m: MessageEntity, character: String, onCopy: () -> Unit, onDelete: () -> Unit, onRemember: () -> Unit, onRegenerate: (() -> Unit)? = null, streaming: Boolean = false) {
     var menu by remember { mutableStateOf(false) }
     val user = m.role == "user"
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
@@ -293,6 +309,7 @@ private fun MessageBubble(m: MessageEntity, character: String, onCopy: () -> Uni
                 DropdownMenuItem(text = { Text("复制", fontSize = 12.sp) }, onClick = { menu = false; onCopy() })
                 if (!user) {
                     DropdownMenuItem(text = { Text("加入永久记忆", fontSize = 12.sp) }, onClick = { menu = false; onRemember() })
+                    DropdownMenuItem(text = { Text("重新生成", fontSize = 12.sp) }, onClick = { menu = false; onRegenerate?.invoke() })
                     DropdownMenuItem(text = { Text("删除这条", fontSize = 12.sp) }, onClick = { menu = false; onDelete() })
                 }
             }
