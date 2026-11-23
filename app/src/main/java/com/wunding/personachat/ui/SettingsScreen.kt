@@ -32,10 +32,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -47,6 +52,8 @@ import com.wunding.personachat.PersonaChatApp
 import com.wunding.personachat.data.ChatEngine
 import com.wunding.personachat.data.Settings
 import com.wunding.personachat.data.SettingsStore
+import com.wunding.personachat.data.UpdateManager
+import com.wunding.personachat.data.AppUpdate
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -61,6 +68,30 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
     var testMsg by remember { mutableStateOf("") }
     var testing by remember { mutableStateOf(false) }
     var saved by remember { mutableStateOf(false) }
+    var deviceMsg by remember { mutableStateOf("") }
+    var update by remember { mutableStateOf<AppUpdate?>(null) }
+    var updateMsg by remember { mutableStateOf("") }
+    var dlProgress by remember { mutableStateOf(-1) }
+
+    val context = LocalContext.current
+    val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) {
+            scope.launch {
+                runCatching {
+                    withContext(Dispatchers.IO) {
+                        val dir = java.io.File(context.filesDir, "models").apply { mkdirs() }
+                        val f = java.io.File(dir, "model.task")
+                        context.contentResolver.openInputStream(uri)?.use { input -> f.outputStream().use { input.copyTo(it) } }
+                        f.absolutePath
+                    }
+                }.onSuccess { path ->
+                    s = s.copy(localModelPath = path)
+                    SettingsStore.save(app, s)
+                    deviceMsg = "已导入模型：" + java.io.File(path).length() / (1024 * 1024) + "MB，点“加载”开始"
+                }.onFailure { deviceMsg = "导入失败：" + (it.message ?: "") }
+            }
+        }
+    }
 
     LaunchedEffect(Unit) { s = SettingsStore.flow(app).first() }
 
@@ -77,20 +108,47 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
             Group("模型接入") {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FilterChip(selected = s.backend == "local", onClick = { s = s.copy(backend = "local", baseUrl = if (s.baseUrl.isBlank() || s.baseUrl.startsWith("http://127.0.0.1")) "http://127.0.0.1:11434/v1" else s.baseUrl, model = if (s.model == "gpt-4o-mini") "llama3.1" else s.model) }, label = { Text("本地 AI", fontSize = 11.sp) })
+                    FilterChip(selected = s.backend == "device", onClick = { s = s.copy(backend = "device") }, label = { Text("手机本地", fontSize = 11.sp) })
                     FilterChip(selected = s.backend == "api", onClick = { s = s.copy(backend = "api", baseUrl = if (s.baseUrl.startsWith("http://127.0.0.1")) "https://api.openai.com/v1" else s.baseUrl) }, label = { Text("API AI", fontSize = 11.sp) })
                 }
                 Text(
-                    if (s.backend == "local") "本地：Ollama / llama.cpp 的 OpenAI 兼容端口，默认 127.0.0.1:11434/v1；老处理器建议 4bit 小模型。"
-                    else "API：任意 OpenAI 兼容服务，Base URL 要带 /v1。",
+                    when (s.backend) {
+                        "device" -> "手机本地：模型在手机上跑（MediaPipe .task，推荐 Gemma 1B int4）；导入一次后完全离线，不联网。"
+                        "local" -> "本地服务：Ollama / llama.cpp 的 OpenAI 兼容端口，默认 127.0.0.1:11434/v1（需在 Termux 里跑）。"
+                        else -> "API：任意 OpenAI 兼容服务，Base URL 要带 /v1。"
+                    },
                     fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedTextField(value = s.baseUrl, onValueChange = { s = s.copy(baseUrl = it) }, label = { Text("Base URL", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = s.apiKey, onValueChange = { s = s.copy(apiKey = it) }, label = { Text("API Key（仅存本机）", fontSize = 10.sp) }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = s.model, onValueChange = { s = s.copy(model = it) }, label = { Text("模型名", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                if (s.backend == "device") {
+                    OutlinedTextField(value = s.localModelPath, onValueChange = { s = s.copy(localModelPath = it) }, label = { Text("本地模型路径（.task）", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        FilterChip(selected = s.localBackend == "gpu", onClick = { s = s.copy(localBackend = "gpu") }, label = { Text("GPU", fontSize = 10.5.sp) })
+                        FilterChip(selected = s.localBackend == "cpu", onClick = { s = s.copy(localBackend = "cpu") }, label = { Text("CPU（老处理器）", fontSize = 10.5.sp) })
+                        TextButton(onClick = { modelPicker.launch(arrayOf("*/*")) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) { Text("导入 .task", fontSize = 10.5.sp) }
+                        TextButton(onClick = { scope.launch { deviceMsg = withContext(Dispatchers.IO) { com.wunding.personachat.data.DeviceLlm.load(s.localModelPath, s.localBackend) } } }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) { Text("加载", fontSize = 10.5.sp) }
+                    }
+                    Text(deviceMsg.ifBlank { com.wunding.personachat.data.DeviceLlm.status() }, fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedTextField(value = s.model, onValueChange = { s = s.copy(model = it) }, label = { Text("模型标签（用于判断对话模板）", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                } else {
+                    OutlinedTextField(value = s.baseUrl, onValueChange = { s = s.copy(baseUrl = it) }, label = { Text("Base URL", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = s.apiKey, onValueChange = { s = s.copy(apiKey = it) }, label = { Text("API Key（仅存本机）", fontSize = 10.sp) }, singleLine = true, visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = s.model, onValueChange = { s = s.copy(model = it) }, label = { Text("模型名", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Button(onClick = {
                         testing = true; testMsg = ""
                         scope.launch {
+                            if (s.backend == "device") {
+                                val loadMsg = withContext(Dispatchers.IO) { com.wunding.personachat.data.DeviceLlm.load(s.localModelPath, s.localBackend) }
+                                testMsg = loadMsg
+                                if (!loadMsg.startsWith("失败")) {
+                                    runCatching { withContext(Dispatchers.IO) { com.wunding.personachat.data.DeviceLlm.generate("回复：OK") } }
+                                        .onSuccess { testMsg = "本地生成成功：" + it.take(30) }
+                                        .onFailure { testMsg = "本地生成失败：" + (it.message ?: "") }
+                                }
+                                testing = false
+                                return@launch
+                            }
                             runCatching {
                                 withTimeout(20000) {
                                     withContext(Dispatchers.IO) {
@@ -140,12 +198,52 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
 
             Group("人设包仓库") {
                 OutlinedTextField(value = s.personaRepo, onValueChange = { s = s.copy(personaRepo = it) }, label = { Text("GitHub repo（owner/name）", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                Text("默认 exchangeq/PocketForge-Personas，230 个 .aist；首页云图标可浏览下载。", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("默认 exchangeq/PocketForge-Personas，530 个 .aist；首页云图标可浏览下载。", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             Button(onClick = {
                 scope.launch { SettingsStore.save(app, s); saved = true }
             }, modifier = Modifier.fillMaxWidth().padding(vertical = 10.dp)) { Text(if (saved) "已保存" else "保存设置") }
+
+            Group("APK 远程更新") {
+                Text("从 GitHub Release 拉最新版本，下载后调系统安装器覆盖安装（签名必须一致）。", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Button(onClick = {
+                        scope.launch {
+                            updateMsg = "检查中…"
+                            runCatching { withContext(Dispatchers.IO) { UpdateManager.check(s.updateRepo) } }
+                                .onSuccess { u ->
+                                    if (u == null) updateMsg = "最新版本没有 APK 资产"
+                                    else if (u.version == BuildConfig.VERSION_NAME) updateMsg = "已是最新：v${u.version}"
+                                    else {
+                                        update = u; updateMsg = "发现新版本 v${u.version}（${u.size / 1024 / 1024}MB）"
+                                    }
+                                }
+                                .onFailure { updateMsg = "检查失败：" + (it.message ?: "") }
+                        }
+                    }, enabled = dlProgress < 0) { Text("检查更新", fontSize = 11.sp) }
+                    update?.let { u ->
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching {
+                                    withContext(Dispatchers.IO) {
+                                        UpdateManager.download(context, u) { p -> dlProgress = p }
+                                    }
+                                }.onSuccess { f ->
+                                    dlProgress = -1
+                                    updateMsg = "下载完成，正在拉起安装…"
+                                    UpdateManager.install(context, f)
+                                }.onFailure { dlProgress = -1; updateMsg = "下载失败：" + (it.message ?: "") }
+                            }
+                        }, enabled = dlProgress < 0) { Text("下载并安装 v${u.version}", fontSize = 11.sp) }
+                    }
+                }
+                if (dlProgress >= 0) {
+                    Text("下载中 $dlProgress%", fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
+                    androidx.compose.material3.LinearProgressIndicator(progress = { dlProgress / 100f }, modifier = Modifier.fillMaxWidth())
+                }
+                if (updateMsg.isNotBlank()) Text(updateMsg, fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
 
             Text("版本 ${BuildConfig.VERSION_NAME} · 由无定工作室开发", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 4.dp))
             Text("所有数据存本机：对话在 SQLite，设置与 Key 在 DataStore；只有对话请求会发到你填的模型地址。", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 18.dp))
