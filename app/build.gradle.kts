@@ -15,8 +15,8 @@ android {
         applicationId = "com.wunding.personachat"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.1.0"
+        versionCode = 5
+        versionName = "1.2.0"
         vectorDrawables { useSupportLibrary = true }
     }
 
@@ -53,6 +53,8 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
     kotlinOptions { jvmTarget = "17" }
     packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
+    androidResources { noCompress += listOf("gguf", "task") }
+    defaultConfig { ndk { abiFilters += listOf("arm64-v8a") } }
 }
 
 dependencies {
