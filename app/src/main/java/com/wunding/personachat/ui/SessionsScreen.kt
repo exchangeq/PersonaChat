@@ -55,7 +55,10 @@ import androidx.compose.ui.unit.sp
 import com.wunding.personachat.PersonaChatApp
 import com.wunding.personachat.data.MessageEntity
 import com.wunding.personachat.data.SessionEntity
+import com.wunding.personachat.data.A3I8
 import com.wunding.personachat.data.ChatTransfer
+import com.wunding.personachat.data.MemoryEntity
+import com.wunding.personachat.data.VoiceForge
 import com.wunding.personachat.data.Settings
 import com.wunding.personachat.data.SettingsStore
 import kotlinx.coroutines.flow.first
@@ -85,6 +88,7 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
     var exportMdFor by remember { mutableStateOf<SessionEntity?>(null) }
     var pendingJson by remember { mutableStateOf<String?>(null) }
     var pendingMd by remember { mutableStateOf<String?>(null) }
+    var pendingA3 by remember { mutableStateOf<String?>(null) }
     var importMsg by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) { settings = SettingsStore.flow(app).first() }
@@ -97,13 +101,17 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
         val body = pendingJson
         if (uri != null && body != null) scope.launch { withContext(Dispatchers.IO) { writeText(context, uri, body) } }
     }
+    val a3Launcher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri: Uri? ->
+        val body = pendingA3
+        if (uri != null && body != null) scope.launch { withContext(Dispatchers.IO) { writeText(context, uri, body) } }
+    }
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) scope.launch {
             val imported = withContext(Dispatchers.IO) {
                 runCatching {
                     val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
                         ?: error("读不到文件")
-                    ChatTransfer.decode(raw)
+                    if (A3I8.isA3I8(raw)) A3I8.decode(raw) else ChatTransfer.decode(raw)
                 }
             }
             imported.onSuccess { data ->
@@ -120,7 +128,11 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
                     data.messages.forEachIndexed { i, (role, content) ->
                         app.db.dao().addMessage(MessageEntity(sessionId = sid, role = role, content = content, ts = data.createdAt + i))
                     }
+                    data.memories.forEachIndexed { i, (level, content) ->
+                        app.db.dao().addMemory(MemoryEntity(level = level, content = content, sourceSession = sid, ts = data.createdAt + i))
+                    }
                 }
+                VoiceForge.importCast(app, data.voice?.copy(persona = data.personaName))
                 importMsg = "已导入：${data.personaName.substringBefore(" ·")} · ${data.messages.size} 条消息"
                 onOpen(sid)
             }.onFailure { importMsg = "导入失败：${it.message ?: "格式不支持"}" }
@@ -193,6 +205,14 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
                             }
                         }
                         DropdownMenu(expanded = menuFor?.id == s.id, onDismissRequest = { menuFor = null }) {
+                            DropdownMenuItem(text = { Text("导出 .a3i8（完整对话）", fontSize = 12.sp) }, onClick = {
+                                menuFor = null
+                                scope.launch {
+                                    pendingA3 = buildA3(app, s)
+                                    val who = s.personaName.substringBefore(" ·").ifBlank { "persona" }.replace(Regex("[\\/:*?\"<>|]"), "_")
+                                    a3Launcher.launch(who + "-" + SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date()) + ".a3i8")
+                                }
+                            })
                             DropdownMenuItem(text = { Text("导出 JSON", fontSize = 12.sp) }, onClick = {
                                 menuFor = null
                                 scope.launch {
@@ -290,6 +310,13 @@ private fun writeText(context: Context, uri: Uri, body: String) {
 private suspend fun buildJson(app: PersonaChatApp, s: SessionEntity): String {
     val msgs = app.db.dao().recent(s.id, 10000).reversed()
     return ChatTransfer.encode(s, msgs)
+}
+
+private suspend fun buildA3(app: PersonaChatApp, s: SessionEntity): String {
+    val msgs = app.db.dao().recent(s.id, 10000).reversed()
+    val mems = app.db.dao().memories().first().filter { it.sourceSession == s.id }
+    val voice = VoiceForge.castFor(app, s.personaName, s.position, s.personaFull)
+    return A3I8.encode(s, msgs, mems, voice)
 }
 
 private suspend fun buildMd(app: PersonaChatApp, s: SessionEntity): String {

@@ -15,8 +15,8 @@ android {
         applicationId = "com.wunding.personachat"
         minSdk = 26
         targetSdk = 34
-        versionCode = 13
-        versionName = "1.6.4"
+        versionCode = 14
+        versionName = "1.6.5"
         vectorDrawables { useSupportLibrary = true }
     }
 

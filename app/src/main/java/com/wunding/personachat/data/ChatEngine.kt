@@ -1,6 +1,7 @@
 package com.wunding.personachat.data
 
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -14,6 +15,13 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 
 object ChatEngine {
+    @Volatile private var activeConn: HttpURLConnection? = null
+
+    /** 停止生成时主动断开正在阻塞的 HTTP 请求，避免“点了停止还在等”。 */
+    fun cancelActive() {
+        runCatching { activeConn?.disconnect() }
+        activeConn = null
+    }
 
     fun systemPrompt(pack: PersonaPack, fullMode: Boolean, memories: List<String>, maxChars: Int = 0): String = buildString {
         appendLine("你在扮演「${pack.character}」，这是本对话的硬设定，必须每轮遵守。")
@@ -132,6 +140,7 @@ object ChatEngine {
             setRequestProperty("Connection", "keep-alive")
             if (settings.apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
         }
+        activeConn = conn
         try {
             conn.outputStream.use { it.write(body.toString().toByteArray()) }
             if (conn.responseCode !in 200..299) {
@@ -151,6 +160,7 @@ object ChatEngine {
             val reader: BufferedReader = input.bufferedReader()
             var got = false
             reader.lineSequence().forEach { line ->
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val t = line.trim()
                 if (t.startsWith("data:")) {
                     val payload = t.removePrefix("data:").trim()
@@ -167,7 +177,10 @@ object ChatEngine {
             throw IllegalStateException("连接超时：本地模型可能没启动，或地址/端口不对")
         } catch (e: UnknownHostException) {
             throw IllegalStateException("域名解析失败：检查网络或 Base URL")
-        } finally { conn.disconnect() }
+        } finally {
+            if (activeConn === conn) activeConn = null
+            conn.disconnect()
+        }
     }
 
     private fun describe(code: Int, err: String): String = when (code) {

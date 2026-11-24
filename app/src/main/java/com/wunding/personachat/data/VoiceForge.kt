@@ -11,6 +11,7 @@ data class CastVoice(
     val rate: Float,
     val seed: Int,
     val voiceName: String,
+    val enabled: Boolean = true,
 ) {
     fun profile(): VoiceProfile {
         val base = Voice.profile(profileId)
@@ -31,9 +32,11 @@ data class CastVoice(
  */
 object VoiceForge {
     private const val PREFS = "voice_forge"
+    private val cache = mutableMapOf<String, CastVoice>()
 
     fun castFor(context: Context, personaName: String, position: String = "", fullText: String = ""): CastVoice {
         val name = personaName.substringBefore(" ·").ifBlank { "角色" }
+        cache[name]?.let { return it }
         val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val saved = p.getString(key(name), null)
         if (saved != null) {
@@ -42,14 +45,16 @@ object VoiceForge {
                 if (c.voiceName.isBlank()) {
                     val v = pickVoice(name, c.seed)
                     if (v.isNotBlank()) {
-                        val fixed = c.copy(voiceName = v); save(p, fixed); return fixed
+                        val fixed = c.copy(voiceName = v); save(p, fixed); cache[name] = fixed; return fixed
                     }
                 }
+                cache[name] = c
                 return c
             }
         }
         val c = derive(name, position, fullText, abs(name.hashCode()) + 1)
         save(p, c)
+        cache[name] = c
         return c
     }
 
@@ -58,11 +63,89 @@ object VoiceForge {
         val old = castFor(context, name, position, fullText)
         val c = derive(name, position, fullText, old.seed + 7919)
         save(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE), c)
+        cache[name] = c
         return c
     }
 
     fun profileFor(context: Context, personaName: String, position: String = "", fullText: String = ""): VoiceProfile =
         castFor(context, personaName, position, fullText).profile()
+
+    /** 导入 .a3i8 时恢复角色音色；没有音色就用人设自动派生。 */
+    fun isEnabled(context: Context, personaName: String): Boolean =
+        castFor(context, personaName).enabled
+
+    fun setEnabled(context: Context, personaName: String, enabled: Boolean): CastVoice {
+        val old = castFor(context, personaName)
+        val fixed = old.copy(enabled = enabled)
+        save(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE), fixed)
+        cache[fixed.persona] = fixed
+        return fixed
+    }
+
+    fun updateTuning(context: Context, personaName: String, pitch: Float, rate: Float): CastVoice {
+        val old = castFor(context, personaName)
+        val fixed = old.copy(pitch = pitch.coerceIn(0.62f, 1.42f), rate = rate.coerceIn(0.72f, 1.22f))
+        save(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE), fixed)
+        cache[fixed.persona] = fixed
+        return fixed
+    }
+
+    /** 音色库配置：.a3v8，一个文件带走所有角色的开关、音高、语速和系统音色。 */
+    fun exportConfig(context: Context, casts: List<CastVoice>): String {
+        val arr = org.json.JSONArray()
+        casts.forEach { c ->
+            arr.put(org.json.JSONObject().apply {
+                put("name", c.persona); put("profileId", c.profileId)
+                put("pitch", c.pitch.toDouble()); put("rate", c.rate.toDouble())
+                put("seed", c.seed); put("voiceName", c.voiceName); put("enabled", c.enabled)
+            })
+        }
+        return org.json.JSONObject().apply {
+            put("magic", "A3V8"); put("format", "a3v8-voice-v1")
+            put("app", "PersonaChat"); put("exportedAt", System.currentTimeMillis())
+            put("voices", arr)
+        }.toString(2)
+    }
+
+    fun importConfig(context: Context, raw: String): Int {
+        val o = org.json.JSONObject(raw)
+        require(o.optString("magic") == "A3V8") { "不是 .a3v8 音色配置" }
+        val arr = o.optJSONArray("voices") ?: return 0
+        var n = 0
+        for (i in 0 until arr.length()) {
+            val v = arr.optJSONObject(i) ?: continue
+            val name = v.optString("name").substringBefore(" ·").ifBlank { "" }
+            if (name.isBlank()) continue
+            val c = CastVoice(
+                persona = name,
+                profileId = v.optString("profileId").ifBlank { "soft" },
+                pitch = v.optDouble("pitch", 1.0).toFloat().coerceIn(0.62f, 1.42f),
+                rate = v.optDouble("rate", 1.0).toFloat().coerceIn(0.72f, 1.22f),
+                seed = v.optInt("seed", 1),
+                voiceName = v.optString("voiceName"),
+                enabled = v.optBoolean("enabled", true),
+            )
+            save(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE), c)
+            cache[name] = c
+            n++
+        }
+        return n
+    }
+
+    fun setAllEnabled(context: Context, enabled: Boolean) {
+        val p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        cache.values.forEach { old ->
+            val fixed = old.copy(enabled = enabled); save(p, fixed); cache[fixed.persona] = fixed
+        }
+    }
+
+    fun importCast(context: Context, cast: CastVoice?) {
+        if (cast == null) return
+        val name = cast.persona.substringBefore(" ·").ifBlank { "角色" }
+        val fixed = cast.copy(persona = name, voiceName = cast.voiceName.ifBlank { pickVoice(name, cast.seed) })
+        save(context.getSharedPreferences(PREFS, Context.MODE_PRIVATE), fixed)
+        cache[name] = fixed
+    }
 
     fun speak(cast: CastVoice, text: String) = Voice.speak(text, cast.profile())
 
@@ -99,10 +182,10 @@ object VoiceForge {
 
     private fun key(name: String) = "cast:" + name
     private fun save(p: android.content.SharedPreferences, c: CastVoice) {
-        p.edit().putString(key(c.persona), "${c.profileId}|${c.pitch}|${c.rate}|${c.seed}|${c.voiceName}").apply()
+        p.edit().putString(key(c.persona), "${c.profileId}|${c.pitch}|${c.rate}|${c.seed}|${c.voiceName}|${c.enabled}").apply()
     }
     private fun parse(s: String, name: String): CastVoice? = runCatching {
         val a = s.split("|")
-        CastVoice(name, a[0], a[1].toFloat(), a[2].toFloat(), a[3].toInt(), a.getOrElse(4) { "" })
+        CastVoice(name, a[0], a[1].toFloat(), a[2].toFloat(), a[3].toInt(), a.getOrElse(4) { "" }, a.getOrElse(5) { "true" }.toBoolean())
     }.getOrNull()
 }

@@ -1,5 +1,8 @@
 package com.wunding.personachat.ui
 
+import android.net.Uri
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
@@ -96,6 +99,7 @@ fun ChatScreen(
     val messagesState = remember { mutableStateOf<List<MessageEntity>>(emptyList()) }
     var input by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
+    var stopRequested by remember { mutableStateOf(false) }
     var streamText by remember { mutableStateOf("") }
     var error by remember { mutableStateOf("") }
     var job by remember { mutableStateOf<Job?>(null) }
@@ -108,6 +112,10 @@ fun ChatScreen(
     var editText by remember { mutableStateOf("") }
     var topMenu by remember { mutableStateOf(false) }
     var voiceDialog by remember { mutableStateOf(false) }
+    var showStats by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
+    var pendingA3 by remember { mutableStateOf<String?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
     var consentOk by remember { mutableStateOf(true) }
     var requestStart by remember { mutableStateOf(0L) }
@@ -116,6 +124,10 @@ fun ChatScreen(
     var deleteSessionTarget by remember { mutableStateOf<SessionEntity?>(null) }
     var sessionPreviews by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
+    val a3Launcher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/octet-stream")) { uri: Uri? ->
+        val body = pendingA3
+        if (uri != null && body != null) scope.launch { withContext(Dispatchers.IO) { writeChatText(context, uri, body) } }
+    }
     LaunchedEffect(sessionId) {
         session = withContext(Dispatchers.IO) { app.db.dao().session(sessionId) }
         settings = SettingsStore.flow(app).first()
@@ -164,6 +176,7 @@ fun ChatScreen(
         val content = text.trim().ifBlank { input.trim() }
         if (content.isEmpty()) return
         lastText = content
+        stopRequested = false
         sending = true; error = ""; streamText = ""; input = ""
         requestStart = System.currentTimeMillis(); elapsedSec = 0; lastOkAt = 0L
         job = scope.launch {
@@ -205,20 +218,20 @@ fun ChatScreen(
                 streamText = ""
                 lastOkAt = System.currentTimeMillis()
                 if (settings.autoRead) {
-                    val profile = com.wunding.personachat.data.VoiceForge.profileFor(app, s.personaName, s.position, s.personaFull)
-                    com.wunding.personachat.data.Voice.speak(reply, profile)
+                    val cast = com.wunding.personachat.data.VoiceForge.castFor(app, s.personaName, s.position, s.personaFull)
+                    if (cast.enabled) com.wunding.personachat.data.VoiceForge.speak(cast, reply)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 val partial = streamText.trim()
-                if (partial.isNotEmpty()) withContext(Dispatchers.IO) {
+                if (!stopRequested && partial.isNotEmpty()) withContext(Dispatchers.IO) {
                     app.db.dao().addMessage(MessageEntity(sessionId = sessionId, role = "assistant", content = partial + "…", ts = System.currentTimeMillis()))
                 }
                 streamText = ""
             } catch (e: Exception) {
-                error = e.message ?: "发送失败"
+                if (!stopRequested) error = e.message ?: "发送失败"
                 streamText = ""
             } finally {
-                sending = false; refreshCounts()
+                sending = false; stopRequested = false; refreshCounts()
             }
         }
     }
@@ -263,6 +276,21 @@ fun ChatScreen(
                             DropdownMenuItem(text = { Text("本角色音色", fontSize = 12.sp) }, onClick = {
                                 topMenu = false
                                 voiceDialog = true
+                            })
+                            DropdownMenuItem(text = { Text("导出 .a3i8（完整对话）", fontSize = 12.sp) }, onClick = {
+                                topMenu = false
+                                val s = session ?: return@DropdownMenuItem
+                                scope.launch {
+                                    pendingA3 = buildA3(app, s)
+                                    val who = s.personaName.substringBefore(" ·").ifBlank { "persona" }.replace(Regex("[\\/:*?\"<>|]"), "_")
+                                    a3Launcher.launch(who + "-" + java.text.SimpleDateFormat("yyyyMMdd-HHmm", java.util.Locale.US).format(java.util.Date()) + ".a3i8")
+                                }
+                            })
+                            DropdownMenuItem(text = { Text("对话统计", fontSize = 12.sp) }, onClick = { topMenu = false; showStats = true })
+                            DropdownMenuItem(text = { Text("搜索本对话", fontSize = 12.sp) }, onClick = { topMenu = false; showSearch = true })
+                            DropdownMenuItem(text = { Text("复制最后一条回复", fontSize = 12.sp) }, onClick = {
+                                topMenu = false
+                                messagesState.value.lastOrNull { it.role == "assistant" }?.let { copyText(context, it.content) }
                             })
                             DropdownMenuItem(text = { Text("导出 / 分享对话", fontSize = 12.sp) }, onClick = {
                                 topMenu = false
@@ -343,7 +371,11 @@ fun ChatScreen(
                         m,
                         character = session?.personaName?.substringBefore(" ·") ?: "",
                         onCopy = { copyText(context, m.content) },
-                        onSpeak = { com.wunding.personachat.data.VoiceForge.castFor(app, session?.personaName.orEmpty(), session?.position.orEmpty(), session?.personaFull.orEmpty()).let { c -> com.wunding.personachat.data.VoiceForge.speak(c, m.content) } },
+                        onSpeak = {
+                            val c = com.wunding.personachat.data.VoiceForge.castFor(app, session?.personaName.orEmpty(), session?.position.orEmpty(), session?.personaFull.orEmpty())
+                            if (c.enabled) com.wunding.personachat.data.VoiceForge.speak(c, m.content)
+                            else android.widget.Toast.makeText(context, "本角色音色已关闭，到「角色音色库」开启", android.widget.Toast.LENGTH_SHORT).show()
+                        },
                         onDelete = { scope.launch { withContext(Dispatchers.IO) { app.db.dao().deleteMessage(m.id) } } },
                         onRemember = {
                             scope.launch {
@@ -404,7 +436,13 @@ fun ChatScreen(
                     fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f),
                 )
                 TextButton(onClick = { onMemory(sessionId) }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("管理记忆", fontSize = 10.sp) }
-                if (sending) TextButton(onClick = { com.wunding.personachat.data.GgufLlm.cancel(); job?.cancel(); job = null }) { Text("停止生成", fontSize = 10.sp, color = MaterialTheme.colorScheme.error) }
+                if (sending) TextButton(onClick = {
+                    stopRequested = true
+                    com.wunding.personachat.data.GgufLlm.cancel()
+                    com.wunding.personachat.data.ChatEngine.cancelActive()
+                    job?.cancel(); job = null
+                    sending = false; streamText = ""
+                }) { Text("停止生成", fontSize = 10.sp, color = MaterialTheme.colorScheme.error) }
             }
             if (!consentOk && session != null) {
                 MatureConsentDialog(
@@ -436,6 +474,48 @@ fun ChatScreen(
                         }
                     },
                     onDismiss = { deleteSessionTarget = null },
+                )
+            }
+            if (showStats && session != null) {
+                val rows = messagesState.value
+                val chars = rows.sumOf { it.content.length }
+                val userN = rows.count { it.role == "user" }
+                val aiN = rows.count { it.role == "assistant" }
+                val voiceLabel = com.wunding.personachat.data.VoiceForge.profileFor(app, session!!.personaName, session!!.position, session!!.personaFull).label
+                AlertDialog(
+                    onDismissRequest = { showStats = false },
+                    title = { Text("对话统计", fontSize = 15.sp) },
+                    text = {
+                        Column {
+                            Text("消息 ${rows.size} 条 · 我 $userN / 角色 $aiN", fontSize = 11.sp)
+                            Text("总字数 ${chars} · 平均 ${if (rows.isEmpty()) 0 else chars / rows.size} 字/条", fontSize = 11.sp, modifier = Modifier.padding(top = 3.dp))
+                            Text("开始：${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.US).format(Date(session!!.createdAt))}", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+                            Text("角色音色：$voiceLabel · ${"%.2f".format(com.wunding.personachat.data.VoiceForge.castFor(app, session!!.personaName, session!!.position, session!!.personaFull).pitch)}", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 3.dp))
+                        }
+                    },
+                    confirmButton = { TextButton(onClick = { showStats = false }) { Text("好", fontSize = 10.5.sp) } },
+                )
+            }
+            if (showSearch) {
+                val hits = messagesState.value.filter { searchQuery.isNotBlank() && it.content.contains(searchQuery, true) }.take(12)
+                AlertDialog(
+                    onDismissRequest = { showSearch = false },
+                    title = { Text("搜索本对话", fontSize = 15.sp) },
+                    text = {
+                        Column {
+                            OutlinedTextField(value = searchQuery, onValueChange = { searchQuery = it }, placeholder = { Text("输入关键词", fontSize = 11.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                            Spacer(Modifier.size(6.dp))
+                            if (searchQuery.isNotBlank() && hits.isEmpty()) Text("没有找到", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            hits.forEach { m ->
+                                Text(
+                                    (if (m.role == "user") "我：" else "角色：") + m.content.replace("\n", " ").take(70),
+                                    fontSize = 10.sp, maxLines = 2, modifier = Modifier.padding(vertical = 2.dp),
+                                )
+                            }
+                            if (hits.isNotEmpty()) Text("最多显示 12 条", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    },
+                    confirmButton = { TextButton(onClick = { showSearch = false }) { Text("关闭", fontSize = 10.5.sp) } },
                 )
             }
             if (voiceDialog && session != null) {
@@ -520,8 +600,19 @@ fun ChatScreen(
     }
 }
 
+private suspend fun buildA3(app: PersonaChatApp, s: SessionEntity): String {
+    val msgs = app.db.dao().recent(s.id, 10000).reversed()
+    val mems = app.db.dao().memories().first().filter { it.sourceSession == s.id }
+    val voice = com.wunding.personachat.data.VoiceForge.castFor(app, s.personaName, s.position, s.personaFull)
+    return com.wunding.personachat.data.A3I8.encode(s, msgs, mems, voice)
+}
+
 private fun loadPackId(app: PersonaChatApp, s: SessionEntity): String {
     return com.wunding.personachat.data.PackStore.list(app).firstOrNull { it.name == s.personaName }?.id ?: ""
+}
+
+private fun writeChatText(context: Context, uri: Uri, body: String) {
+    context.contentResolver.openOutputStream(uri)?.use { it.write(body.toByteArray(Charsets.UTF_8)) }
 }
 
 private fun copyText(context: Context, text: String) {

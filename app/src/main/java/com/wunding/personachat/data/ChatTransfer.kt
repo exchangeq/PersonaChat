@@ -10,6 +10,8 @@ data class ImportedChat(
     val position: String,
     val personaFull: String,
     val messages: List<Pair<String, String>>,
+    val memories: List<Pair<Int, String>> = emptyList(),
+    val voice: CastVoice? = null,
     val createdAt: Long = System.currentTimeMillis(),
 )
 
