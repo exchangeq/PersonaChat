@@ -107,6 +107,7 @@ fun ChatScreen(
     var editing by remember { mutableStateOf<MessageEntity?>(null) }
     var editText by remember { mutableStateOf("") }
     var topMenu by remember { mutableStateOf(false) }
+    var voiceDialog by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     var consentOk by remember { mutableStateOf(true) }
     var requestStart by remember { mutableStateOf(0L) }
@@ -204,8 +205,7 @@ fun ChatScreen(
                 streamText = ""
                 lastOkAt = System.currentTimeMillis()
                 if (settings.autoRead) {
-                    val profile = com.wunding.personachat.data.Voice.profiles.firstOrNull { it.id == settings.voiceProfile }
-                        ?: com.wunding.personachat.data.Voice.profiles.first()
+                    val profile = com.wunding.personachat.data.VoiceForge.profileFor(app, s.personaName, s.position, s.personaFull)
                     com.wunding.personachat.data.Voice.speak(reply, profile)
                 }
             } catch (e: kotlinx.coroutines.CancellationException) {
@@ -259,6 +259,10 @@ fun ChatScreen(
                                     settings = settings.copy(autoRead = !settings.autoRead)
                                     SettingsStore.save(app, settings)
                                 }
+                            })
+                            DropdownMenuItem(text = { Text("本角色音色", fontSize = 12.sp) }, onClick = {
+                                topMenu = false
+                                voiceDialog = true
                             })
                             DropdownMenuItem(text = { Text("导出 / 分享对话", fontSize = 12.sp) }, onClick = {
                                 topMenu = false
@@ -339,7 +343,7 @@ fun ChatScreen(
                         m,
                         character = session?.personaName?.substringBefore(" ·") ?: "",
                         onCopy = { copyText(context, m.content) },
-                        onSpeak = { com.wunding.personachat.data.Voice.speak(m.content, com.wunding.personachat.data.Voice.profiles.firstOrNull { it.id == settings.voiceProfile } ?: com.wunding.personachat.data.Voice.profiles.first()) },
+                        onSpeak = { com.wunding.personachat.data.VoiceForge.castFor(app, session?.personaName.orEmpty(), session?.position.orEmpty(), session?.personaFull.orEmpty()).let { c -> com.wunding.personachat.data.VoiceForge.speak(c, m.content) } },
                         onDelete = { scope.launch { withContext(Dispatchers.IO) { app.db.dao().deleteMessage(m.id) } } },
                         onRemember = {
                             scope.launch {
@@ -432,6 +436,15 @@ fun ChatScreen(
                         }
                     },
                     onDismiss = { deleteSessionTarget = null },
+                )
+            }
+            if (voiceDialog && session != null) {
+                VoiceCastDialog(
+                    app = app,
+                    personaName = session!!.personaName,
+                    position = session!!.position,
+                    fullText = session!!.personaFull,
+                    onDismiss = { voiceDialog = false },
                 )
             }
             if (confirmClear) {

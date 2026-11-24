@@ -23,6 +23,7 @@ fun PersonaNav(app: PersonaChatApp) {
                 onOpenSettings = { nav.navigate("settings") },
                 onOpenModels = { nav.navigate("models") },
                 onOpenSessions = { nav.navigate("sessions") },
+                onOpenVoices = { nav.navigate("voices") },
             )
         }
         composable("detail/{id}") { back ->
@@ -72,6 +73,9 @@ fun PersonaNav(app: PersonaChatApp) {
         }
         composable("models") {
             ModelStoreScreen(app = app, onBack = { nav.popBackStack() })
+        }
+        composable("voices") {
+            VoiceScreen(app = app, onBack = { nav.popBackStack() })
         }
     }
 }

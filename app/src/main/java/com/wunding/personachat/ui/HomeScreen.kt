@@ -87,6 +87,7 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onOpenSessions: () -> Unit,
     onOpenModels: () -> Unit,
+    onOpenVoices: () -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     var packs by remember { mutableStateOf<List<PersonaPack>>(emptyList()) }
@@ -154,6 +155,7 @@ fun HomeScreen(
         Column(Modifier.fillMaxSize()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text("${packs.size} 个本地包", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                TextButton(onClick = onOpenVoices) { Text("角色音色 ›", fontSize = 11.sp) }
                 TextButton(onClick = onOpenSessions) { Text("会话列表 ›", fontSize = 11.sp) }
             }
             OutlinedTextField(
@@ -334,22 +336,24 @@ private fun PackRow(pack: PersonaPack, onOpen: () -> Unit, onChat: () -> Unit, o
         Card(
             modifier = Modifier.fillMaxWidth().combinedClickable(onClick = onOpen, onLongClick = { menu = true }),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-            shape = RoundedCornerShape(12.dp),
+            elevation = CardDefaults.cardElevation(defaultElevation = 1.dp),
+            shape = RoundedCornerShape(16.dp),
         ) {
-            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                InitialAvatar(pack.name, 40.dp)
-                Spacer(Modifier.size(10.dp))
+            Row(Modifier.padding(horizontal = 13.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                InitialAvatar(pack.name, 44.dp, 14.dp)
+                Spacer(Modifier.size(11.dp))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(pack.name, fontSize = 13.5.sp, fontWeight = FontWeight.Medium, maxLines = 1, modifier = Modifier.weight(1f, false))
-                        Text("  v${pack.version}", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(pack.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, modifier = Modifier.weight(1f, false))
+                        Text("  v${pack.version}", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    Text("${pack.position.ifBlank { "角色扮演" }} · ${pack.files.count { it.endsWith(".md") }} 段 · ${pack.extNames.size} 扩展", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-                    Row(Modifier.padding(top = 4.dp)) {
+                    Text("${pack.position.ifBlank { "角色扮演" }} · ${pack.extNames.size} 扩展", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1, modifier = Modifier.padding(top = 2.dp))
+                    Row(Modifier.padding(top = 6.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                         StatusPill("未加载", MaterialTheme.colorScheme.onSurfaceVariant)
+                        StatusPill("音色自动匹配", MaterialTheme.colorScheme.secondary)
                     }
                 }
-                TextButton(onClick = onChat) { Text("加载", fontSize = 11.5.sp, fontWeight = FontWeight.Medium) }
+                TextButton(onClick = onChat, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 2.dp)) { Text("开始", fontSize = 11.5.sp, fontWeight = FontWeight.SemiBold) }
             }
         }
         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
