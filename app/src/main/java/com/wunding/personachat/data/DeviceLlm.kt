@@ -31,17 +31,22 @@ object DeviceLlm {
         if (inst != null && loadedPath == path && lastError.isBlank()) return "已加载"
         runCatching { inst?.close() }
         inst = null; loadedPath = ""; lastError = ""
-        return try {
+        fun create(useGpu: Boolean) {
             val opts = LlmInference.LlmInferenceOptions.builder()
                 .setModelPath(path)
                 .setMaxTokens(2048)
-                .setPreferredBackend(
-                    if (backend == "cpu") LlmInference.Backend.CPU else LlmInference.Backend.GPU
-                )
+                .setPreferredBackend(if (useGpu) LlmInference.Backend.GPU else LlmInference.Backend.CPU)
                 .build()
             inst = LlmInference.createFromOptions(ctx, opts)
+        }
+        return try {
+            // GPU 在部分机型会直接崩进程；先按用户选择，失败自动退回 CPU 再试一次。
+            runCatching { create(backend != "cpu") }
+                .getOrElse {
+                    if (backend != "cpu") runCatching { create(false) }.getOrThrow() else throw it
+                }
             loadedPath = path
-            "已加载：" + path.substringAfterLast('/')
+            "已加载：" + path.substringAfterLast('/') + if (backend != "cpu") "（GPU 失败时已自动回退 CPU）" else ""
         } catch (e: Throwable) {
             lastError = "加载失败：" + (e.message ?: e.javaClass.simpleName) + "（显存不足可换 CPU 或更小模型）"
             lastError

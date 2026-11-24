@@ -126,7 +126,7 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpenModels: () -> 
                     OutlinedTextField(value = s.localModelPath, onValueChange = { s = s.copy(localModelPath = it) }, label = { Text("本地模型路径（.task / .gguf）", fontSize = 10.sp) },
                         placeholder = { Text("导入后自动填入；GGUF 推荐 Q4_K_M、1~2B 参数", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        FilterChip(selected = s.localBackend == "gpu", onClick = { s = s.copy(localBackend = "gpu") }, label = { Text("GPU", fontSize = 10.5.sp) })
+                        FilterChip(selected = s.localBackend == "gpu", onClick = { s = s.copy(localBackend = "gpu") }, label = { Text("GPU（部分机型会闪退）", fontSize = 10.5.sp) })
                         FilterChip(selected = s.localBackend == "cpu", onClick = { s = s.copy(localBackend = "cpu") }, label = { Text("CPU（老处理器）", fontSize = 10.5.sp) })
                         TextButton(onClick = { modelPicker.launch(arrayOf("*/*")) }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) { Text("导入模型", fontSize = 10.5.sp) }
                         TextButton(onClick = {

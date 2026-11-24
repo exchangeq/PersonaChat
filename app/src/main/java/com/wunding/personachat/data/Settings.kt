@@ -31,7 +31,7 @@ data class Settings(
     val personaRepo: String = "exchangeq/PocketForge-Personas",
     /** 手机本地模型（MediaPipe .task 文件）绝对路径 */
     val localModelPath: String = "",
-    val localBackend: String = "gpu",   // gpu / cpu
+    val localBackend: String = "cpu",   // gpu / cpu（GPU 部分机型会闪退，默认 CPU）
     val updateRepo: String = "exchangeq/PersonaChat",
     val autoRead: Boolean = false,
     val voiceProfile: String = "default",
@@ -84,7 +84,7 @@ object SettingsStore {
             accent = p[K.accent] ?: "green",
             personaRepo = p[K.repo] ?: "exchangeq/PocketForge-Personas",
             localModelPath = p[K.localModel] ?: "",
-            localBackend = p[K.localBackend] ?: "gpu",
+            localBackend = p[K.localBackend] ?: "cpu",
             updateRepo = p[K.updateRepo] ?: "exchangeq/PersonaChat",
             autoRead = p[K.autoRead] ?: false,
             voiceProfile = p[K.voiceProfile] ?: "default",
