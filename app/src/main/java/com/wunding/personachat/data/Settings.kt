@@ -19,7 +19,7 @@ data class Settings(
     val model: String = "llama3.1",
     val temperature: Float = 0.8f,
     val maxTokens: Int = 1024,
-    /** 极速模式：远程只带最近 8 条、输出上限 512、人设截断到 6000 字，明显更快 */
+    /** 极速模式：远程只带最近 6 条、压缩上下文；输出按设定，不再硬砍到短回复 */
     val fastMode: Boolean = true,
     val stream: Boolean = true,
     val memoryEnabled: Boolean = true,

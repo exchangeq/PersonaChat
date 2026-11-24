@@ -228,7 +228,17 @@ fun ChatScreen(
                 }
                 streamText = ""
             } catch (e: Exception) {
-                if (!stopRequested) error = e.message ?: "发送失败"
+                val partial = streamText.trim()
+                if (!stopRequested && partial.isNotEmpty()) {
+                    // 网络中途断开时不要把已经生成的内容一起丢掉，保留并标记被截断。
+                    withContext(Dispatchers.IO) {
+                        app.db.dao().addMessage(MessageEntity(sessionId = sessionId, role = "assistant", content = partial + "…", ts = System.currentTimeMillis()))
+                        app.db.dao().putSession(s.copy(updatedAt = System.currentTimeMillis()))
+                    }
+                    lastOkAt = System.currentTimeMillis()
+                } else if (!stopRequested) {
+                    error = e.message ?: "发送失败"
+                }
                 streamText = ""
             } finally {
                 sending = false; stopRequested = false; refreshCounts()
