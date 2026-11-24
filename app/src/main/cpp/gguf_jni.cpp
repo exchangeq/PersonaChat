@@ -19,6 +19,13 @@ struct Engine {
     int ctx_limit = 2048;
     std::mutex mu;
     std::atomic<bool> cancel{false};
+    // 跨轮复用：上下文只创建一次，KV cache 只增量解码新增后缀。
+    llama_context * ctx = nullptr;
+    int n_ctx = 0;
+    std::vector<llama_token> kv_tokens;
+    int kv_n = 0;
+    int last_prompt = 0;
+    int last_hit = 0;
 };
 
 extern "C" void ggml_backend_load_all_from_path(const char * dir_path);
@@ -85,6 +92,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_wunding_personachat_data_GgufLlm_nativeFree(JNIEnv *, jobject, jlong handle) {
     Engine * e = (Engine *) handle;
     if (!e) return;
+    if (e->ctx) llama_free(e->ctx);
     if (e->model) llama_model_free(e->model);
     delete e;
 }
@@ -103,6 +111,26 @@ Java_com_wunding_personachat_data_GgufLlm_nativeInfo(JNIEnv * env, jobject, jlon
     snprintf(buf, sizeof(buf), "%s | ctx_train=%d", e->tmpl.empty() ? "无内置模板" : "内置对话模板",
              e->model ? llama_model_n_ctx_train(e->model) : 0);
     return env->NewStringUTF(buf);
+}
+
+/** 只建一次上下文；模型和上下文上限不变时复用，避免每轮重新分配 KV cache。 */
+static bool ensureContext(Engine * e) {
+    int train_ctx = (int) llama_model_n_ctx_train(e->model);
+    int n_ctx = train_ctx > 4096 ? 4096 : (train_ctx > 0 ? train_ctx : 2048);
+    if (n_ctx < 1024) n_ctx = 1024;
+    if (n_ctx > e->ctx_limit) n_ctx = e->ctx_limit;
+    if (e->ctx && e->n_ctx == n_ctx) return true;
+    if (e->ctx) { llama_free(e->ctx); e->ctx = nullptr; }
+    e->kv_tokens.clear();
+    e->kv_n = 0;
+    llama_context_params cp = llama_context_default_params();
+    cp.n_ctx = n_ctx;
+    cp.n_batch = 256;
+    cp.n_threads = e->threads;
+    cp.n_threads_batch = e->threads;
+    e->ctx = llama_init_from_model(e->model, cp);
+    e->n_ctx = e->ctx ? n_ctx : 0;
+    return e->ctx != nullptr;
 }
 
 static bool decodeTokens(Engine * e, llama_context * ctx, std::vector<llama_token> & toks, int pos0) {
@@ -157,18 +185,12 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
         prompt += "Assistant:";
     }
 
-    int train_ctx = (int) llama_model_n_ctx_train(e->model);
-    int n_ctx = train_ctx > 4096 ? 4096 : (train_ctx > 0 ? train_ctx : 2048);
-    if (n_ctx < 1024) n_ctx = 1024;
-    llama_context_params cp = llama_context_default_params();
-    // 手机端稳定优先：按机型内存/模型大小传入的硬上限，避免 KV cache 把进程顶掉。
-    if (n_ctx > e->ctx_limit) n_ctx = e->ctx_limit;
-    cp.n_ctx = n_ctx;
-    cp.n_batch = 256;
-    cp.n_threads = e->threads;
-    cp.n_threads_batch = e->threads;
-    llama_context * ctx = llama_init_from_model(e->model, cp);
-    if (!ctx) { throwJava(env, "创建上下文失败：内存不足，换更小量化（Q4_K_M / Q3_K_M）"); return 0; }
+    if (!ensureContext(e)) {
+        throwJava(env, "创建上下文失败：内存不足，换更小量化（Q4_K_M / Q3_K_M）");
+        return 0;
+    }
+    llama_context * ctx = e->ctx;
+    int n_ctx = e->n_ctx;
 
     std::vector<llama_token> toks(prompt.size() + 32);
     int nt = llama_tokenize(e->vocab, prompt.c_str(), (int) prompt.size(), toks.data(), (int) toks.size(), true, true);
@@ -178,7 +200,6 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
     }
     toks.resize(nt > 0 ? nt : 0);
     if (toks.empty()) {
-        llama_free(ctx);
         throwJava(env, "prompt 为空：人设或消息内容不能为空");
         return 0;
     }
@@ -197,9 +218,28 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
     if (room < 32) room = 32;
     if (maxTokens > room) maxTokens = room;
 
-    int pos = 0;
+    // 找与上一轮 prompt 的最长公共前缀，只解码新增后缀；这是本地连续对话最大的提速点。
+    int common = 0;
+    int maxCommon = std::min<int>((int) toks.size(), e->kv_n);
+    while (common < maxCommon && toks[common] == e->kv_tokens[common]) common++;
+    llama_memory_t mem = llama_get_memory(ctx);
+    if (e->kv_n > 0) {
+        // 无条件从 common 往后清掉：既处理历史前缀变化，也清掉上一轮可能残留的生成 token。
+        bool trimmed = mem && llama_memory_seq_rm(mem, 0, common, -1);
+        if (!trimmed && mem) {
+            llama_memory_clear(mem, true);
+            common = 0;
+        }
+        e->kv_n = common;
+        e->kv_tokens.resize(common);
+    }
+    e->last_prompt = (int) toks.size();
+    e->last_hit = common;
+    LOGI("prompt=%d cache_hit=%d new=%d n_ctx=%d", (int) toks.size(), common, (int) toks.size() - common, n_ctx);
+
+    int pos = common;
     bool ok = true;
-    for (int i = 0; i < (int) toks.size(); i += 256) {
+    for (int i = common; i < (int) toks.size(); i += 256) {
         int remain = std::min(256, (int) toks.size() - i);
         std::vector<llama_token> chunk(toks.begin() + i, toks.begin() + i + remain);
         ok = decodeTokens(e, ctx, chunk, pos);
@@ -207,9 +247,13 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
         if (!ok) break;
     }
     if (!ok) {
-        llama_free(ctx); throwJava(env, "prompt 解码失败：上下文太小，缩短人设或历史");
+        if (mem) llama_memory_clear(mem, true);
+        e->kv_n = 0; e->kv_tokens.clear();
+        throwJava(env, "prompt 解码失败：上下文太小，缩短人设或历史");
         return 0;
     }
+    e->kv_tokens = toks;
+    e->kv_n = (int) toks.size();
 
     llama_sampler * chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
     llama_sampler_chain_add(chain, llama_sampler_init_top_k(40));
@@ -249,7 +293,8 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
         generated++;
     }
     llama_sampler_free(chain);
-    llama_free(ctx);
+    // 生成出的 token 不留在缓存里：下一轮 prompt 会重新带上它们，只保留 prompt 前缀即可。
+    if (mem && e->kv_n > 0) llama_memory_seq_rm(mem, 0, e->kv_n, -1);
     return generated;
     } catch (const std::exception & ex) {
         throwJava(env, ("GGUF 生成异常：" + std::string(ex.what())).c_str());
