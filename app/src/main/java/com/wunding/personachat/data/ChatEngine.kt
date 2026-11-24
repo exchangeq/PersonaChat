@@ -89,56 +89,24 @@ object ChatEngine {
             var emitted = false
             var lastError: Exception? = null
             var tokenField = "max_tokens"
+            val full = StringBuilder()
+            var truncated = false
+            var cutMidStream = false
             for (attempt in 0..2) {
                 if (attempt > 0) kotlinx.coroutines.delay(if (attempt == 1) 600L else 1500L)
                 try {
-                    val full = StringBuilder()
-                    var truncated = false
+                    truncated = false
                     requestFlow(settings, system, history, userText, streamMode = settings.stream || fast, maxTokens = outTokens, histN = histN, tokenField = tokenField).collect { chunk ->
                         if (chunk == FINISH_LENGTH) {
                             truncated = true
-                        } else {
+                        } else if (chunk.isNotEmpty()) {
                             emitted = true
                             full.append(chunk)
                             emit(chunk)
                         }
                     }
-                    // 输出到 max_tokens 被切断，或动作括号没闭合：带着已写内容再请求一次，从断点续写，最多两次。
-                    var round = 0
-                    var needContinue = truncated || hasUnclosedParen(full.toString())
-                    while (needContinue && full.isNotBlank() && round < 2) {
-                        round++
-                        needContinue = false
-                        val prior = full.toString()
-                        val contHistory = history + MessageEntity(
-                            sessionId = history.lastOrNull()?.sessionId ?: "",
-                            role = "user",
-                            content = userText,
-                            ts = System.currentTimeMillis(),
-                        ) + MessageEntity(
-                            sessionId = history.lastOrNull()?.sessionId ?: "",
-                            role = "assistant",
-                            content = prior,
-                            ts = System.currentTimeMillis(),
-                        )
-                        requestFlow(
-                            settings, system, contHistory,
-                            "接着上一段写完。不要重复已经写过的内容，不要解释，不要重新开场。",
-                            streamMode = settings.stream || fast,
-                            maxTokens = outTokens,
-                            histN = histN,
-                            tokenField = tokenField,
-                        ).collect { chunk ->
-                            if (chunk == FINISH_LENGTH) {
-                                needContinue = true
-                            } else {
-                                val clean = if (round == 1) trimOverlap(full.toString(), chunk) else chunk
-                                if (clean.isNotEmpty()) { full.append(clean); emit(clean) }
-                            }
-                        }
-                        if (hasUnclosedParen(full.toString())) needContinue = true
-                    }
-                    return@flow
+                    cutMidStream = false
+                    break
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -149,10 +117,65 @@ object ChatEngine {
                         tokenField = "max_completion_tokens"
                         continue
                     }
-                    // 已经吐过字就不再重试，避免重复内容
-                    if (emitted) throw e
+                    // 已经吐过字但连接被代理/服务端掐断：不要直接丢掉后半段，进入自动续写。
+                    if (emitted && full.isNotBlank()) {
+                        cutMidStream = true
+                        break
+                    }
                 }
             }
+            if (!emitted && full.isBlank()) {
+                // 流式始终拿不到内容时，退回一次性请求再试一次
+                runCatching {
+                    val text = requestFlow(settings, system, history, userText, streamMode = false, maxTokens = outTokens, histN = histN, tokenField = tokenField).firstOrNull()
+                    if (!text.isNullOrBlank()) { emit(text); return@flow }
+                }
+                throw lastError ?: IllegalStateException("模型没有返回内容")
+            }
+            var round = 0
+            var needContinue = truncated || cutMidStream || looksIncomplete(full.toString())
+            while (needContinue && full.isNotBlank() && round < 4) {
+                round++
+                needContinue = false
+                val prior = full.toString()
+                val contHistory = history + MessageEntity(
+                    sessionId = history.lastOrNull()?.sessionId ?: "",
+                    role = "user",
+                    content = userText,
+                    ts = System.currentTimeMillis(),
+                ) + MessageEntity(
+                    sessionId = history.lastOrNull()?.sessionId ?: "",
+                    role = "assistant",
+                    content = prior,
+                    ts = System.currentTimeMillis(),
+                )
+                try {
+                    var contTruncated = false
+                    requestFlow(
+                        settings, system, contHistory,
+                        "接着上一段写完。不要重复已经写过的内容，不要解释，不要重新开场。",
+                        streamMode = settings.stream || fast,
+                        maxTokens = outTokens,
+                        histN = histN,
+                        tokenField = tokenField,
+                    ).collect { chunk ->
+                        if (chunk == FINISH_LENGTH) {
+                            contTruncated = true
+                        } else if (chunk.isNotEmpty()) {
+                            val clean = if (round == 1) trimOverlap(full.toString(), chunk) else chunk
+                            if (clean.isNotEmpty()) { full.append(clean); emit(clean) }
+                        }
+                    }
+                    needContinue = contTruncated || looksIncomplete(full.toString())
+                } catch (e: kotlinx.coroutines.CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    lastError = e
+                    break
+                }
+            }
+            if (needContinue) throw lastError ?: IllegalStateException("回复被输出上限切断，自动续写后仍未写完，请重试")
+            if (full.isNotBlank()) return@flow
             // 流式始终拿不到内容时，退回一次性请求再试一次
             runCatching {
                 val text = requestFlow(settings, system, history, userText, streamMode = false, maxTokens = outTokens, histN = histN, tokenField = tokenField).firstOrNull()
@@ -262,6 +285,18 @@ object ChatEngine {
             if (activeConn === conn) activeConn = null
             conn.disconnect()
         }
+    }
+
+    /** 比“括号没闭合”更宽：逗号、冒号、省略号、长句无句末标点，都当作可能被截断。 */
+    private fun looksIncomplete(text: String): Boolean {
+        val t = text.trimEnd()
+        if (t.isEmpty()) return false
+        if (hasUnclosedParen(t)) return true
+        val last = t.last()
+        if (last in "，,、：:；;…—~") return true
+        if (last == '“' || last == '「' || last == '『' || last == '《') return true
+        if (last in "。！？!?）)】]」』”\"") return false
+        return t.length >= 24
     }
 
     /** 括号动作没闭合，通常说明回复在网络/输出上限处被切断。 */

@@ -230,12 +230,12 @@ fun ChatScreen(
             } catch (e: Exception) {
                 val partial = streamText.trim()
                 if (!stopRequested && partial.isNotEmpty()) {
-                    // 网络中途断开时不要把已经生成的内容一起丢掉，保留并标记被截断。
+                    // 自动续写仍失败：保留已生成内容，但明确告诉用户这是被切断的半段。
                     withContext(Dispatchers.IO) {
                         app.db.dao().addMessage(MessageEntity(sessionId = sessionId, role = "assistant", content = partial + "…", ts = System.currentTimeMillis()))
                         app.db.dao().putSession(s.copy(updatedAt = System.currentTimeMillis()))
                     }
-                    lastOkAt = System.currentTimeMillis()
+                    error = "回复在中途被切断，已保留前半段：" + (e.message ?: "网络/接口中断")
                 } else if (!stopRequested) {
                     error = e.message ?: "发送失败"
                 }

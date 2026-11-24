@@ -107,6 +107,10 @@ fun VoiceScreen(app: PersonaChatApp, onBack: () -> Unit) {
                 fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
             )
+            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(Voice.statusText(), fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                TextButton(onClick = { Voice.reinit(context); msg = Voice.statusText() }) { Text("重新检测语音引擎", fontSize = 9.5.sp) }
+            }
             OutlinedTextField(
                 value = query, onValueChange = { query = it },
                 placeholder = { Text("搜索角色 / 定位", fontSize = 11.sp) },
