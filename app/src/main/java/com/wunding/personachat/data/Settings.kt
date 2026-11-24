@@ -19,6 +19,8 @@ data class Settings(
     val model: String = "llama3.1",
     val temperature: Float = 0.8f,
     val maxTokens: Int = 1024,
+    /** 极速模式：远程只带最近 8 条、输出上限 512、人设截断到 6000 字，明显更快 */
+    val fastMode: Boolean = true,
     val stream: Boolean = true,
     val memoryEnabled: Boolean = true,
     val writeEvery: Int = 4,
@@ -46,6 +48,7 @@ object SettingsStore {
         val model = stringPreferencesKey("model")
         val temp = floatPreferencesKey("temperature")
         val maxTokens = intPreferencesKey("max_tokens")
+        val fastMode = booleanPreferencesKey("fast_mode")
         val stream = booleanPreferencesKey("stream")
         val memOn = booleanPreferencesKey("memory_enabled")
         val writeEvery = intPreferencesKey("write_every")
@@ -71,6 +74,7 @@ object SettingsStore {
             model = p[K.model] ?: "llama3.1",
             temperature = p[K.temp] ?: 0.8f,
             maxTokens = p[K.maxTokens] ?: 1024,
+            fastMode = p[K.fastMode] ?: true,
             stream = p[K.stream] ?: true,
             memoryEnabled = p[K.memOn] ?: true,
             writeEvery = p[K.writeEvery] ?: 4,
@@ -97,6 +101,7 @@ object SettingsStore {
             p[K.model] = s.model
             p[K.temp] = s.temperature
             p[K.maxTokens] = s.maxTokens
+            p[K.fastMode] = s.fastMode
             p[K.stream] = s.stream
             p[K.memOn] = s.memoryEnabled
             p[K.writeEvery] = s.writeEvery

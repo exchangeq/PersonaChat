@@ -371,6 +371,8 @@ fun ChatScreen(
                 Text("已归档人设：重新导入相同包后可继续对话；当前只读查看历史。", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp))
             }
             val statusText = when {
+                sending && streamText.isEmpty() && elapsedSec >= 25 -> "● 已等待 ${elapsedSec}s：模型可能未响应，可点停止"
+                sending && streamText.isEmpty() && elapsedSec >= 3 -> "● 请求已发出，等待模型首字… ${elapsedSec}s"
                 sending && streamText.isEmpty() -> "● 正在发送请求… ${elapsedSec}s"
                 sending -> "● 正在接收回复… ${streamText.length} 字"
                 error.isNotBlank() -> "● 请求失败"

@@ -15,11 +15,11 @@ import java.net.UnknownHostException
 
 object ChatEngine {
 
-    fun systemPrompt(pack: PersonaPack, fullMode: Boolean, memories: List<String>): String = buildString {
+    fun systemPrompt(pack: PersonaPack, fullMode: Boolean, memories: List<String>, maxChars: Int = 6000): String = buildString {
         appendLine("你在扮演「${pack.character}」，这是本对话的硬设定，必须每轮遵守。")
         if (fullMode) {
             appendLine("以下是人设包全文（含主设定与扩展包），逐条生效：")
-            appendLine(pack.fullText)
+            appendLine(pack.fullText.take(if (maxChars > 0) maxChars else pack.fullText.length))
         } else {
             appendLine("定位：${pack.position.ifBlank { "角色扮演" }}")
             appendLine("保持角色名字、称呼、语气与边界；不要解释设定来源。")
@@ -48,11 +48,14 @@ object ChatEngine {
 
     fun send(settings: Settings, system: String, history: List<MessageEntity>, userText: String): Flow<String> =
         flow {
+            val fast = settings.fastMode
+            val histN = if (fast) 8 else 16
+            val outTokens = if (fast) minOf(settings.maxTokens, 512) else settings.maxTokens
             if (settings.backend == "device" && settings.localModelPath.endsWith(".gguf", true)) {
-                val msgs = history.takeLast(16).map { (if (it.role == "user") "user" else "assistant") to it.content }
+                val msgs = history.takeLast(histN).map { (if (it.role == "user") "user" else "assistant") to it.content }
                 GgufLlm.stream(
                     system, msgs, userText,
-                    maxTokens = settings.maxTokens,
+                    maxTokens = outTokens,
                     temperature = settings.temperature,
                 ).collect { emit(it) }
                 return@flow
@@ -61,7 +64,7 @@ object ChatEngine {
                 val prompt = DeviceLlm.wrapPrompt(
                     settings.localModelPath.substringAfterLast('/'),
                     system,
-                    history.takeLast(12).map { it.role to it.content },
+                    history.takeLast(if (settings.fastMode) 6 else 12).map { it.role to it.content },
                     userText,
                 )
                 val full = DeviceLlm.generate(prompt)
@@ -73,7 +76,7 @@ object ChatEngine {
             for (attempt in 0..2) {
                 if (attempt > 0) kotlinx.coroutines.delay(if (attempt == 1) 600L else 1500L)
                 try {
-                    requestFlow(settings, system, history, userText, streamMode = settings.stream).collect { chunk ->
+                    requestFlow(settings, system, history, userText, streamMode = settings.stream, maxTokens = outTokens, histN = histN).collect { chunk ->
                         emitted = true
                         emit(chunk)
                     }
@@ -88,7 +91,7 @@ object ChatEngine {
             }
             // 流式始终拿不到内容时，退回一次性请求再试一次
             runCatching {
-                val text = requestFlow(settings, system, history, userText, streamMode = false).firstOrNull()
+                val text = requestFlow(settings, system, history, userText, streamMode = false, maxTokens = outTokens, histN = histN).firstOrNull()
                 if (!text.isNullOrBlank()) { emit(text); return@flow }
             }
             throw lastError ?: IllegalStateException("模型没有返回内容")
@@ -100,17 +103,19 @@ object ChatEngine {
         history: List<MessageEntity>,
         userText: String,
         streamMode: Boolean,
+        maxTokens: Int = 1024,
+        histN: Int = 16,
     ): Flow<String> = flow {
         val base = settings.baseUrl.trim().trimEnd('/')
         val url = if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
         val body = JSONObject().apply {
             put("model", settings.model.ifBlank { "llama3.1" })
             put("temperature", settings.temperature.toDouble())
-            put("max_tokens", settings.maxTokens)
+            put("max_tokens", maxTokens)
             put("stream", streamMode)
             put("messages", JSONArray().apply {
                 put(JSONObject().put("role", "system").put("content", system))
-                history.takeLast(16).forEach { m ->
+                history.takeLast(histN).forEach { m ->
                     put(JSONObject().put("role", if (m.role == "user") "user" else "assistant").put("content", m.content))
                 }
                 put(JSONObject().put("role", "user").put("content", userText))
@@ -123,6 +128,8 @@ object ChatEngine {
             doOutput = true
             setRequestProperty("Content-Type", "application/json")
             setRequestProperty("Accept", if (streamMode) "text/event-stream" else "application/json")
+            setRequestProperty("Accept-Encoding", "gzip")
+            setRequestProperty("Connection", "keep-alive")
             if (settings.apiKey.isNotBlank()) setRequestProperty("Authorization", "Bearer ${settings.apiKey}")
         }
         try {
@@ -131,14 +138,17 @@ object ChatEngine {
                 val err = conn.errorStream?.bufferedReader()?.readText()?.take(300).orEmpty()
                 throw IllegalStateException(describe(conn.responseCode, err))
             }
+            val rawIn = conn.inputStream
+            val input = if (conn.getHeaderField("Content-Encoding").orEmpty().contains("gzip", true))
+                java.util.zip.GZIPInputStream(rawIn) else rawIn
             if (!streamMode) {
-                val text = conn.inputStream.bufferedReader().readText()
+                val text = input.bufferedReader().readText()
                 val content = JSONObject(text).optJSONArray("choices")?.optJSONObject(0)
                     ?.optJSONObject("message")?.optString("content").orEmpty()
                 if (content.isNotBlank()) emit(content) else throw IllegalStateException("模型没有返回内容")
                 return@flow
             }
-            val reader: BufferedReader = conn.inputStream.bufferedReader()
+            val reader: BufferedReader = input.bufferedReader()
             var got = false
             reader.lineSequence().forEach { line ->
                 val t = line.trim()

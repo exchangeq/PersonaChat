@@ -29,9 +29,27 @@ static void throwJava(JNIEnv * env, const char * msg) {
 static std::string jstr(JNIEnv * env, jstring s) {
     if (!s) return "";
     const char * p = env->GetStringUTFChars(s, nullptr);
-    std::string out(p ? p : "");
+    if (!p) return "";
+    std::string out(p);
     env->ReleaseStringUTFChars(s, p);
     return out;
+}
+
+/** 返回字符串开头完整 UTF-8 序列的字节数（token 可能把汉字切成两半）。 */
+static size_t completeUtf8Len(const std::string & s) {
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = (unsigned char) s[i];
+        size_t need = 0;
+        if ((c & 0x80) == 0) need = 1;
+        else if ((c & 0xE0) == 0xC0) need = 2;
+        else if ((c & 0xF0) == 0xE0) need = 3;
+        else if ((c & 0xF8) == 0xF0) need = 4;
+        else return i; // 非法起始字节，截断
+        if (i + need > s.size()) return i; // 尾段不完整
+        i += need;
+    }
+    return i;
 }
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -131,8 +149,10 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
 
     int train_ctx = (int) llama_model_n_ctx_train(e->model);
     int n_ctx = train_ctx > 4096 ? 4096 : (train_ctx > 0 ? train_ctx : 2048);
-    if (n_ctx < 512) n_ctx = 512;
+    if (n_ctx < 1024) n_ctx = 1024;
     llama_context_params cp = llama_context_default_params();
+    // 手机端稳定优先：上下文别开太大，1024~2048 足够日常对话，也更省内存。
+    if (n_ctx > 2048) n_ctx = 2048;
     cp.n_ctx = n_ctx;
     cp.n_batch = 256;
     cp.n_threads = e->threads;
@@ -147,6 +167,11 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
         nt = llama_tokenize(e->vocab, prompt.c_str(), (int) prompt.size(), toks.data(), (int) toks.size(), true, true);
     }
     toks.resize(nt > 0 ? nt : 0);
+    if (toks.empty()) {
+        llama_free(ctx);
+        throwJava(env, "prompt 为空：人设或消息内容不能为空");
+        return 0;
+    }
     // 防超长：完整人设模式可能上万 token，保留开头（模板/系统提示）与结尾（最近对话）
     int cap = n_ctx - std::min<int>(maxTokens, n_ctx / 2) - 8;
     if (cap < 256) cap = 256;
@@ -157,6 +182,10 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
         cut.insert(cut.end(), toks.end() - (cap - head), toks.end());
         toks.swap(cut);
     }
+    // 给生成留出真实空间，避免 prompt + 输出超过 n_ctx 导致 decode 越界。
+    int room = n_ctx - (int) toks.size() - 8;
+    if (room < 32) room = 32;
+    if (maxTokens > room) maxTokens = room;
 
     int pos = 0;
     bool ok = true;
@@ -182,17 +211,26 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
     jmethodID cbMethod = env->GetMethodID(cbClass, "onToken", "(Ljava/lang/String;)V");
     int generated = 0;
     char piece[512];
+    std::string pending;
     for (int i = 0; i < maxTokens; i++) {
         if (e->cancel.load()) break;
         llama_token id = llama_sampler_sample(chain, ctx, -1);
         if (llama_vocab_is_eog(e->vocab, id)) break;
         int np = llama_token_to_piece(e->vocab, id, piece, sizeof(piece), 0, false);
         if (np > 0) {
-            std::string s(piece, np);
-            jstring js = env->NewStringUTF(s.c_str());
-            env->CallVoidMethod(callback, cbMethod, js);
-            env->DeleteLocalRef(js);
-            if (env->ExceptionCheck()) break;
+            pending.append(piece, np);
+            // 只把完整 UTF-8 片段交给 Java，避免半个汉字导致 NewStringUTF 崩溃。
+            size_t valid = completeUtf8Len(pending);
+            if (valid > 0) {
+                std::string s = pending.substr(0, valid);
+                pending.erase(0, valid);
+                jstring js = env->NewStringUTF(s.c_str());
+                if (js) {
+                    env->CallVoidMethod(callback, cbMethod, js);
+                    env->DeleteLocalRef(js);
+                }
+                if (env->ExceptionCheck()) break;
+            }
         }
         std::vector<llama_token> one{id};
         if (!decodeTokens(e, ctx, one, pos)) break;

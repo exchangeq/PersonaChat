@@ -19,6 +19,7 @@ object GgufLlm {
     @Volatile private var handle: Long = 0L
     @Volatile private var loadedPath: String = ""
     @Volatile private var lastError: String = ""
+    @Volatile private var generating: Boolean = false
     private var app: Context? = null
 
     fun init(context: Context) { app = context.applicationContext }
@@ -34,6 +35,7 @@ object GgufLlm {
 
     @Synchronized
     fun load(path: String, threads: Int = 4): String {
+        if (generating) return "正在生成回复，先点停止再切换模型"
         if (path.isBlank()) return "先导入 .gguf 模型文件"
         if (!java.io.File(path).exists()) return "模型文件不存在：$path"
         if (handle != 0L && loadedPath == path) return "已加载"
@@ -62,6 +64,7 @@ object GgufLlm {
     }
 
     fun unload() {
+        if (generating) { cancel(); return }
         if (handle != 0L) runCatching { nativeFree(handle) }
         handle = 0L
         loadedPath = ""
@@ -88,6 +91,7 @@ object GgufLlm {
         }
         roles.add("user"); contents.add(user)
         val sink = TokenSink { trySend(it) }
+        generating = true
         try {
             withContext(Dispatchers.Default) {
                 nativeGenerate(
@@ -98,6 +102,8 @@ object GgufLlm {
         } catch (e: Throwable) {
             close(e)
             return@callbackFlow
+        } finally {
+            generating = false
         }
         close()
         awaitClose { }
