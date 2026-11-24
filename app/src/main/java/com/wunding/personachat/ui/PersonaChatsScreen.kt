@@ -128,37 +128,33 @@ fun PersonaChatsScreen(app: PersonaChatApp, packId: String, onBack: () -> Unit, 
     }
 
     deleteTarget?.let { s ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text("永久删除这个会话？") },
-            text = { Text("「${s.title}」的全部消息与本会话短期记忆会一起删除，不进入归档、不可恢复。", fontSize = 12.sp) },
-            confirmButton = {
-                TextButton(onClick = { purge(s.id); deleteTarget = null }) { Text("永久删除", color = MaterialTheme.colorScheme.error) }
-            },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
+        CooldownDeleteDialog(
+            title = "永久删除这个会话？",
+            message = "「${s.title}」的全部消息与本会话短期记忆会一起删除，不进入归档、不可恢复。",
+            confirmLabel = "永久删除",
+            onConfirm = { purge(s.id); deleteTarget = null },
+            onDismiss = { deleteTarget = null },
         )
     }
     if (clearAll) {
-        AlertDialog(
-            onDismissRequest = { clearAll = false },
-            title = { Text("删除全部 ${mine.size} 个会话？") },
-            text = { Text("这个人设的所有对话、消息、短期记忆都会永久删除，不可恢复。", fontSize = 12.sp) },
-            confirmButton = {
-                TextButton(onClick = {
-                    scope.launch {
-                        withContext(Dispatchers.IO) {
-                            mine.forEach {
-                                app.db.dao().deleteMessages(it.id)
-                                app.db.dao().clearShort(it.id)
-                                app.db.dao().deleteSession(it.id)
-                            }
+        CooldownDeleteDialog(
+            title = "删除全部 ${mine.size} 个会话？",
+            message = "这个人设的所有对话、消息、短期记忆都会永久删除，不可恢复。",
+            confirmLabel = "全部删除",
+            onConfirm = {
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        mine.forEach {
+                            app.db.dao().deleteMessages(it.id)
+                            app.db.dao().clearShort(it.id)
+                            app.db.dao().deleteSession(it.id)
                         }
-                        clearAll = false
-                        msg = "已清空该人设的全部会话"
                     }
-                }) { Text("全部删除", color = MaterialTheme.colorScheme.error) }
+                    clearAll = false
+                    msg = "已清空该人设的全部会话"
+                }
             },
-            dismissButton = { TextButton(onClick = { clearAll = false }) { Text("取消") } },
+            onDismiss = { clearAll = false },
         )
     }
 }

@@ -79,6 +79,7 @@ import java.util.Date
 import java.util.Locale
 
 @Composable
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 fun ChatScreen(
     app: PersonaChatApp,
     sessionId: String,
@@ -111,6 +112,8 @@ fun ChatScreen(
     var requestStart by remember { mutableStateOf(0L) }
     var elapsedSec by remember { mutableStateOf(0) }
     var lastOkAt by remember { mutableStateOf(0L) }
+    var deleteSessionTarget by remember { mutableStateOf<SessionEntity?>(null) }
+    var sessionPreviews by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
 
     LaunchedEffect(sessionId) {
         session = withContext(Dispatchers.IO) { app.db.dao().session(sessionId) }
@@ -119,6 +122,15 @@ fun ChatScreen(
         val se = session
         consentOk = se == null || !com.wunding.personachat.data.Consent.required(se.personaName, se.position, se.personaFull) ||
             com.wunding.personachat.data.Consent.accepted(context, se.personaName)
+    }
+    LaunchedEffect(allSessions, messagesState.value.size) {
+        val top = allSessions.take(10)
+        sessionPreviews = withContext(Dispatchers.IO) {
+            top.associate { se ->
+                val m = app.db.dao().lastMessage(se.id)
+                se.id to (m?.content?.replace("\n", " ")?.take(40).orEmpty())
+            }
+        }
     }
     LaunchedEffect(sending) {
         while (sending) {
@@ -263,15 +275,37 @@ fun ChatScreen(
     ) { pad ->
         Column(Modifier.fillMaxSize().padding(pad)) {
             LazyRow(
-                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 3.dp),
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                items(allSessions.take(8), key = { it.id }) { it ->
-                    FilterChip(
-                        selected = it.id == sessionId,
-                        onClick = { if (it.id != sessionId) onSwitchSession(it.id) },
-                        label = { Text(it.title.substringAfter("对话 ").ifBlank { it.personaName.substringBefore(" ·") }, fontSize = 10.sp) },
-                    )
+                items(allSessions.take(8), key = { it.id }) { se ->
+                    val selected = se.id == sessionId
+                    Surface(
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                        modifier = Modifier.width(152.dp).combinedClickable(
+                            onClick = { if (se.id != sessionId) onSwitchSession(se.id) },
+                            onLongClick = { deleteSessionTarget = se },
+                        ),
+                    ) {
+                        Column(Modifier.padding(horizontal = 9.dp, vertical = 6.dp)) {
+                            Text(
+                                se.personaName.substringBefore(" ·").ifBlank { se.title },
+                                fontSize = 10.5.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                                color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                sessionPreviews[se.id].orEmpty().ifBlank { "（还没有消息）" },
+                                fontSize = 8.5.sp, maxLines = 1,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 1.dp),
+                            )
+                            Text(
+                                java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(se.updatedAt)),
+                                fontSize = 8.sp, color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
                 }
             }
             LazyColumn(
@@ -370,6 +404,28 @@ fun ChatScreen(
                         consentOk = true
                     },
                     onDecline = onBack,
+                )
+            }
+            deleteSessionTarget?.let { target ->
+                CooldownDeleteDialog(
+                    title = "删除这个会话？",
+                    message = "「${target.personaName.substringBefore(" ·")} · ${target.title}」的消息与短期记忆会一起删除，不可恢复。长按会话卡片触发，取消即安全退出。",
+                    confirmLabel = "删除会话",
+                    onConfirm = {
+                        deleteSessionTarget = null
+                        val next = allSessions.firstOrNull { it.id != target.id }
+                        scope.launch {
+                            withContext(Dispatchers.IO) {
+                                app.db.dao().deleteMessages(target.id)
+                                app.db.dao().clearShort(target.id)
+                                app.db.dao().deleteSession(target.id)
+                            }
+                            if (target.id == sessionId) {
+                                if (next != null) onSwitchSession(next.id) else onBack()
+                            }
+                        }
+                    },
+                    onDismiss = { deleteSessionTarget = null },
                 )
             }
             if (confirmClear) {

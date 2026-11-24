@@ -135,7 +135,11 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
                                 Spacer(Modifier.size(9.dp))
                                 Column(Modifier.weight(1f)) {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
-                                        Text(s.title, fontSize = 12.5.sp, fontWeight = FontWeight.Medium, maxLines = 1, modifier = Modifier.weight(1f, false))
+                                        Text(
+                                            s.personaName.substringBefore(" ·").ifBlank { s.title } +
+                                                if (s.title.isNotBlank() && !s.title.startsWith("对话 ")) " · " + s.title else "",
+                                            fontSize = 12.5.sp, fontWeight = FontWeight.Medium, maxLines = 1, modifier = Modifier.weight(1f, false),
+                                        )
                                         Text("  " + SimpleDateFormat("MM-dd HH:mm", Locale.US).format(Date(s.updatedAt)), fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                     }
                                     Text(s.position.ifBlank { "角色扮演" }, fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
@@ -222,22 +226,20 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
         )
     }
     deleteTarget?.let { s ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text("删除 ${s.title}？") },
-            text = { Text("消息会一起删除，不可恢复。", fontSize = 12.sp) },
-            confirmButton = {
-                TextButton(onClick = {
-                    scope.launch {
-                        withContext(Dispatchers.IO) {
-                            app.db.dao().deleteMessages(s.id)
-                            app.db.dao().deleteSession(s.id)
-                        }
+        CooldownDeleteDialog(
+            title = "删除这个会话？",
+            message = "「${s.personaName.substringBefore(" ·")} · ${s.title}」的消息会一起删除，不可恢复。",
+            confirmLabel = "删除会话",
+            onConfirm = {
+                scope.launch {
+                    withContext(Dispatchers.IO) {
+                        app.db.dao().deleteMessages(s.id)
+                        app.db.dao().deleteSession(s.id)
                     }
-                    deleteTarget = null
-                }) { Text("删除") }
+                }
+                deleteTarget = null
             },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
+            onDismiss = { deleteTarget = null },
         )
     }
 }

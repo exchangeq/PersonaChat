@@ -68,6 +68,9 @@ interface PersonaDao {
     @Query("SELECT * FROM messages WHERE sessionId = :sid ORDER BY id ASC")
     fun messages(sid: String): Flow<List<MessageEntity>>
 
+    @Query("SELECT * FROM messages WHERE sessionId = :sid ORDER BY id DESC LIMIT 1")
+    suspend fun lastMessage(sid: String): MessageEntity?
+
     @Query("SELECT * FROM messages WHERE sessionId = :sid ORDER BY id DESC LIMIT :n")
     suspend fun recent(sid: String, n: Int): List<MessageEntity>
 
