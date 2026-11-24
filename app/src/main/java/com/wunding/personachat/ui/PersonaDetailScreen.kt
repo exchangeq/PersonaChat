@@ -87,7 +87,7 @@ fun PersonaDetailScreen(app: PersonaChatApp, packId: String, onBack: () -> Unit,
             Spacer(Modifier.size(14.dp))
             SectionCard(
                 title = "主设定",
-                subtitle = "${pack.fullText.count { it == '\n' }} 行 · 注入上限 16000 字",
+                subtitle = "${pack.fullText.count { it == '\n' }} 行 · 全文注入（由模型上下文自动裁剪）",
                 expanded = openMain,
                 onToggle = { openMain = !openMain },
             ) {

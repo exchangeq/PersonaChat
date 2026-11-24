@@ -202,7 +202,7 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpenModels: () -> 
                 Slider(value = s.maxTokens.toFloat(), onValueChange = { s = s.copy(maxTokens = it.toInt()) }, valueRange = 128f..4096f)
                 SwitchRow("流式输出", s.stream) { s = s.copy(stream = it) }
                 SwitchRow("极速模式（推荐）", s.fastMode) { s = s.copy(fastMode = it) }
-                Text("开启后：远程只带最近 8 条对话、输出上限 512 token、人设截断到 6000 字；本地同时缩小上下文，降低卡顿和闪退概率。", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("开启后：远程只带最近 8 条对话、输出上限 512 token；人设全文不截断，交给模型上下文处理。本地会按内存自动降低上下文，降低闪退概率。", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             Group("记忆") {

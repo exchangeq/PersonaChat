@@ -191,9 +191,13 @@ fun ChatScreen(
                             shorts.take(shorts.size - settings.shortKeep).forEach { app.db.dao().deleteMemory(it.id) }
                         }
                         val turns = app.db.dao().countMessages(sessionId)
-                        if (turns % (settings.writeEvery * 2) < 2) {
-                            val summary = ChatEngine.summarize(settings, "我：$content\nAI：$reply")
-                            app.db.dao().addMemory(MemoryEntity(level = 1, content = summary, sourceSession = sessionId, ts = System.currentTimeMillis()))
+                        if (!settings.fastMode && turns % (settings.writeEvery * 2) < 2) {
+                            val textForSummary = "我：$content\nAI：$reply"
+                            // 摘要请求另开协程，不阻塞本轮回复结束与输入框解锁。
+                            scope.launch(Dispatchers.IO) {
+                                val summary = ChatEngine.summarize(settings, textForSummary)
+                                app.db.dao().addMemory(MemoryEntity(level = 1, content = summary, sourceSession = sessionId, ts = System.currentTimeMillis()))
+                            }
                         }
                     }
                 }

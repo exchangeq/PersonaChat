@@ -15,11 +15,11 @@ import java.net.UnknownHostException
 
 object ChatEngine {
 
-    fun systemPrompt(pack: PersonaPack, fullMode: Boolean, memories: List<String>, maxChars: Int = 6000): String = buildString {
+    fun systemPrompt(pack: PersonaPack, fullMode: Boolean, memories: List<String>, maxChars: Int = 5000): String = buildString {
         appendLine("你在扮演「${pack.character}」，这是本对话的硬设定，必须每轮遵守。")
         if (fullMode) {
             appendLine("以下是人设包全文（含主设定与扩展包），逐条生效：")
-            appendLine(pack.fullText.take(if (maxChars > 0) maxChars else pack.fullText.length))
+            appendLine(if (maxChars > 0) pack.fullText.take(maxChars) else pack.fullText)
         } else {
             appendLine("定位：${pack.position.ifBlank { "角色扮演" }}")
             appendLine("保持角色名字、称呼、语气与边界；不要解释设定来源。")
@@ -49,8 +49,8 @@ object ChatEngine {
     fun send(settings: Settings, system: String, history: List<MessageEntity>, userText: String): Flow<String> =
         flow {
             val fast = settings.fastMode
-            val histN = if (fast) 8 else 16
-            val outTokens = if (fast) minOf(settings.maxTokens, 512) else settings.maxTokens
+            val histN = if (fast) 6 else 16
+            val outTokens = if (fast) minOf(settings.maxTokens, 384) else settings.maxTokens
             if (settings.backend == "device" && settings.localModelPath.endsWith(".gguf", true)) {
                 val msgs = history.takeLast(histN).map { (if (it.role == "user") "user" else "assistant") to it.content }
                 GgufLlm.stream(
@@ -76,7 +76,7 @@ object ChatEngine {
             for (attempt in 0..2) {
                 if (attempt > 0) kotlinx.coroutines.delay(if (attempt == 1) 600L else 1500L)
                 try {
-                    requestFlow(settings, system, history, userText, streamMode = settings.stream, maxTokens = outTokens, histN = histN).collect { chunk ->
+                    requestFlow(settings, system, history, userText, streamMode = settings.stream || fast, maxTokens = outTokens, histN = histN).collect { chunk ->
                         emitted = true
                         emit(chunk)
                     }

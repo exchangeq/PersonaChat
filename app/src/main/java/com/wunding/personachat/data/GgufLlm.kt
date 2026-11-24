@@ -1,5 +1,6 @@
 package com.wunding.personachat.data
 
+import android.app.ActivityManager
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -41,9 +42,16 @@ object GgufLlm {
         if (handle != 0L && loadedPath == path) return "已加载"
         unload()
         lastError = ""
-        System.loadLibrary("personagguf")
+        val f = java.io.File(path)
+        if (f.length() < 1024 * 1024) return "模型文件过小，可能没下载完整".also { lastError = it }
+        val magic = runCatching { f.inputStream().use { input -> ByteArray(4).also { input.read(it) } } }.getOrNull()
+        if (magic == null || String(magic, Charsets.US_ASCII) != "GGUF") {
+            lastError = "不是有效 GGUF（缺少 GGUF 文件头），请重新下载模型"
+            return lastError
+        }
         return try {
-            handle = nativeLoad(path, threads, app?.applicationInfo?.nativeLibraryDir ?: "")
+            System.loadLibrary("personagguf")
+            handle = nativeLoad(path, threads.coerceIn(1, 4), app?.applicationInfo?.nativeLibraryDir ?: "", safeContext(path))
             if (handle == 0L) {
                 lastError = "加载失败：文件无效或内存不足"
                 lastError
@@ -106,7 +114,7 @@ object GgufLlm {
             generating = false
         }
         close()
-        awaitClose { }
+        awaitClose { cancel() }
     }.buffer(Channel.UNLIMITED).flowOn(Dispatchers.IO)
 
     class TokenSink(val cb: (String) -> Unit) {
@@ -114,7 +122,21 @@ object GgufLlm {
         fun onToken(s: String) = cb(s)
     }
 
-    private external fun nativeLoad(path: String, threads: Int, libDir: String): Long
+    /** 低内存/大模型自动降上下文：宁可慢一点，也别让 LMK 把进程杀掉。 */
+    private fun safeContext(path: String): Int {
+        val modelMb = runCatching { java.io.File(path).length() / (1024 * 1024) }.getOrDefault(0L)
+        val totalMb = runCatching {
+            val am = app?.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+            val mi = ActivityManager.MemoryInfo(); am.getMemoryInfo(mi); mi.totalMem / (1024 * 1024)
+        }.getOrDefault(4096L)
+        return when {
+            modelMb >= 2500 || totalMb <= 4096 -> 512
+            modelMb >= 1400 || totalMb <= 6144 -> 1024
+            else -> 2048
+        }
+    }
+
+    private external fun nativeLoad(path: String, threads: Int, libDir: String, ctxLimit: Int): Long
     private external fun nativeGenerate(
         handle: Long, system: String, roles: Array<String>, contents: Array<String>,
         maxTokens: Int, temperature: Float, sink: TokenSink

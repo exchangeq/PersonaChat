@@ -5,6 +5,7 @@
 #include <vector>
 #include <mutex>
 #include <atomic>
+#include <exception>
 
 #define TAG "PChatGGUF"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -15,6 +16,7 @@ struct Engine {
     const llama_vocab * vocab = nullptr;
     std::string tmpl;
     int threads = 4;
+    int ctx_limit = 2048;
     std::mutex mu;
     std::atomic<bool> cancel{false};
 };
@@ -53,21 +55,28 @@ static size_t completeUtf8Len(const std::string & s) {
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_wunding_personachat_data_GgufLlm_nativeLoad(JNIEnv * env, jobject, jstring path, jint threads, jstring libDir) {
+Java_com_wunding_personachat_data_GgufLlm_nativeLoad(JNIEnv * env, jobject, jstring path, jint threads, jstring libDir, jint ctxLimit) {
     std::string p = jstr(env, path);
     std::string dir = jstr(env, libDir);
-    if (!dir.empty()) ggml_backend_load_all_from_path(dir.c_str());
-    llama_backend_init();
-    llama_model_params mp = llama_model_default_params();
-    mp.n_gpu_layers = 0;
-    llama_model * model = llama_model_load_from_file(p.c_str(), mp);
-    if (!model) { throwJava(env, "GGUF 加载失败：文件损坏、量化不支持或内存不足"); return 0; }
+    llama_model * model = nullptr;
+    try {
+        if (!dir.empty()) ggml_backend_load_all_from_path(dir.c_str());
+        llama_backend_init();
+        llama_model_params mp = llama_model_default_params();
+        mp.n_gpu_layers = 0;
+        model = llama_model_load_from_file(p.c_str(), mp);
+        if (!model) { throwJava(env, "GGUF 加载失败：文件损坏、量化不支持或内存不足"); return 0; }
+    } catch (const std::exception & ex) {
+        throwJava(env, ("GGUF 加载异常：" + std::string(ex.what())).c_str()); return 0;
+    } catch (...) { throwJava(env, "GGUF 加载异常（未知）"); return 0; }
     Engine * e = new Engine();
     e->model = model;
     e->vocab = llama_model_get_vocab(model);
     const char * t = llama_model_chat_template(model, nullptr);
     e->tmpl = t ? t : "";
     e->threads = threads > 0 ? threads : 4;
+    if (e->threads > 4) e->threads = 4;
+    e->ctx_limit = ctxLimit >= 512 ? ctxLimit : 2048;
     LOGI("model loaded, tmpl=%s", e->tmpl.empty() ? "none" : "embedded");
     return (jlong) e;
 }
@@ -119,6 +128,7 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
         jint maxTokens, jfloat temp, jobject callback) {
     Engine * e = (Engine *) handle;
     if (!e || !e->model) { throwJava(env, "GGUF 模型未加载"); return 0; }
+    try {
     std::lock_guard<std::mutex> lock(e->mu);
     e->cancel.store(false);
 
@@ -151,8 +161,8 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
     int n_ctx = train_ctx > 4096 ? 4096 : (train_ctx > 0 ? train_ctx : 2048);
     if (n_ctx < 1024) n_ctx = 1024;
     llama_context_params cp = llama_context_default_params();
-    // 手机端稳定优先：上下文别开太大，1024~2048 足够日常对话，也更省内存。
-    if (n_ctx > 2048) n_ctx = 2048;
+    // 手机端稳定优先：按机型内存/模型大小传入的硬上限，避免 KV cache 把进程顶掉。
+    if (n_ctx > e->ctx_limit) n_ctx = e->ctx_limit;
     cp.n_ctx = n_ctx;
     cp.n_batch = 256;
     cp.n_threads = e->threads;
@@ -215,6 +225,7 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
     for (int i = 0; i < maxTokens; i++) {
         if (e->cancel.load()) break;
         llama_token id = llama_sampler_sample(chain, ctx, -1);
+        if (id < 0 || id >= llama_vocab_n_tokens(e->vocab)) break;
         if (llama_vocab_is_eog(e->vocab, id)) break;
         int np = llama_token_to_piece(e->vocab, id, piece, sizeof(piece), 0, false);
         if (np > 0) {
@@ -240,4 +251,11 @@ Java_com_wunding_personachat_data_GgufLlm_nativeGenerate(
     llama_sampler_free(chain);
     llama_free(ctx);
     return generated;
+    } catch (const std::exception & ex) {
+        throwJava(env, ("GGUF 生成异常：" + std::string(ex.what())).c_str());
+        return 0;
+    } catch (...) {
+        throwJava(env, "GGUF 生成异常（未知，可能是内存不足）");
+        return 0;
+    }
 }
