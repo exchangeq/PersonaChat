@@ -15,7 +15,7 @@ import java.net.UnknownHostException
 
 object ChatEngine {
 
-    fun systemPrompt(pack: PersonaPack, fullMode: Boolean, memories: List<String>, maxChars: Int = 5000): String = buildString {
+    fun systemPrompt(pack: PersonaPack, fullMode: Boolean, memories: List<String>, maxChars: Int = 0): String = buildString {
         appendLine("你在扮演「${pack.character}」，这是本对话的硬设定，必须每轮遵守。")
         if (fullMode) {
             appendLine("以下是人设包全文（含主设定与扩展包），逐条生效：")

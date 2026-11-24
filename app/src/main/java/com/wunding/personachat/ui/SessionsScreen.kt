@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.sp
 import com.wunding.personachat.PersonaChatApp
 import com.wunding.personachat.data.MessageEntity
 import com.wunding.personachat.data.SessionEntity
+import com.wunding.personachat.data.ChatTransfer
 import com.wunding.personachat.data.Settings
 import com.wunding.personachat.data.SettingsStore
 import kotlinx.coroutines.flow.first
@@ -84,6 +85,7 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
     var exportMdFor by remember { mutableStateOf<SessionEntity?>(null) }
     var pendingJson by remember { mutableStateOf<String?>(null) }
     var pendingMd by remember { mutableStateOf<String?>(null) }
+    var importMsg by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit) { settings = SettingsStore.flow(app).first() }
     val pinned = settings.pinned.split(",").filter { it.isNotBlank() }.toSet()
@@ -94,6 +96,35 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
     val jsonLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
         val body = pendingJson
         if (uri != null && body != null) scope.launch { withContext(Dispatchers.IO) { writeText(context, uri, body) } }
+    }
+    val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) scope.launch {
+            val imported = withContext(Dispatchers.IO) {
+                runCatching {
+                    val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes().toString(Charsets.UTF_8) }
+                        ?: error("读不到文件")
+                    ChatTransfer.decode(raw)
+                }
+            }
+            imported.onSuccess { data ->
+                val sid = "imp-" + System.currentTimeMillis().toString(36) + "-" + (0..999).random()
+                withContext(Dispatchers.IO) {
+                    app.db.dao().putSession(
+                        SessionEntity(
+                            id = sid, title = data.title, personaName = data.personaName,
+                            position = data.position, personaFull = data.personaFull,
+                            fullMode = true, archived = false,
+                            createdAt = data.createdAt, updatedAt = System.currentTimeMillis(),
+                        )
+                    )
+                    data.messages.forEachIndexed { i, (role, content) ->
+                        app.db.dao().addMessage(MessageEntity(sessionId = sid, role = role, content = content, ts = data.createdAt + i))
+                    }
+                }
+                importMsg = "已导入：${data.personaName.substringBefore(" ·")} · ${data.messages.size} 条消息"
+                onOpen(sid)
+            }.onFailure { importMsg = "导入失败：${it.message ?: "格式不支持"}" }
+        }
     }
     val mdLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/markdown")) { uri: Uri? ->
         val body = pendingMd
@@ -106,6 +137,7 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") } },
                 title = { Text("会话", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
                 actions = {
+                    TextButton(onClick = { importLauncher.launch(arrayOf("application/json", "text/plain", "application/x-ndjson", "*/*")) }) { Text("导入", fontSize = 11.sp) }
                     TextButton(onClick = { cleanConfirm = true }) { Text("清理重复", fontSize = 11.sp) }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
@@ -113,9 +145,13 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
         },
     ) { pad ->
         if (sessions.isEmpty()) {
-            EmptyStateCanvas("还没有会话。回首页选一个人设包开始。", Modifier.padding(pad))
+            Column(Modifier.padding(pad)) {
+                if (importMsg.isNotBlank()) Text(importMsg, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.secondary, modifier = Modifier.padding(horizontal = 14.dp))
+                EmptyStateCanvas("还没有会话。回首页选一个人设包开始，或点右上角「导入」恢复对话。", Modifier.fillMaxSize())
+            }
         } else {
             Column(Modifier.fillMaxSize().padding(pad)) {
+                if (importMsg.isNotBlank()) Text(importMsg, fontSize = 10.5.sp, color = MaterialTheme.colorScheme.secondary, modifier = Modifier.padding(horizontal = 14.dp))
                 OutlinedTextField(
                     value = query, onValueChange = { query = it },
                     placeholder = { Text("搜索会话 / 人设 / 定位", fontSize = 11.sp) },
@@ -253,17 +289,7 @@ private fun writeText(context: Context, uri: Uri, body: String) {
 
 private suspend fun buildJson(app: PersonaChatApp, s: SessionEntity): String {
     val msgs = app.db.dao().recent(s.id, 10000).reversed()
-    val arr = JSONArray()
-    msgs.forEach { m -> arr.put(JSONObject().put("role", m.role).put("content", m.content).put("ts", m.ts)) }
-    return JSONObject().apply {
-        put("exportedAt", System.currentTimeMillis())
-        put("persona_snapshot", JSONObject().apply {
-            put("name", s.personaName); put("position", s.position); put("fullText", s.personaFull)
-            put("hash", s.personaFull.hashCode())
-        })
-        put("session", JSONObject().apply { put("id", s.id); put("title", s.title); put("createdAt", s.createdAt) })
-        put("messages", arr)
-    }.toString(2)
+    return ChatTransfer.encode(s, msgs)
 }
 
 private suspend fun buildMd(app: PersonaChatApp, s: SessionEntity): String {

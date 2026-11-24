@@ -369,6 +369,11 @@ private fun PackRow(pack: PersonaPack, onOpen: () -> Unit, onChat: () -> Unit, o
     }
 }
 
+private fun extractOpening(fullText: String): String {
+    val m = Regex("##\\s*开场(?:白)?\\s*\n+(.+?)(?=\n## |\\z)", RegexOption.DOT_MATCHES_ALL).find(fullText)
+    return m?.groupValues?.get(1)?.trim().orEmpty()
+}
+
 suspend fun startSession(app: PersonaChatApp, pack: PersonaPack): String {
     val now0 = System.currentTimeMillis()
     // 同一个人设只保留一个会话：再次“加载”直接回到原对话，不再新开
@@ -389,6 +394,9 @@ suspend fun startSession(app: PersonaChatApp, pack: PersonaPack): String {
             personaFull = pack.fullText, fullMode = true, archived = false, createdAt = now, updatedAt = now,
         )
     )
-    app.db.dao().addMessage(MessageEntity(sessionId = sid, role = "assistant", content = "（${pack.character} 已就位。设定已锁定，本对话内不可更改。）", ts = now))
+    val opening = extractOpening(pack.fullText)
+    if (opening.isNotBlank()) {
+        app.db.dao().addMessage(MessageEntity(sessionId = sid, role = "assistant", content = opening, ts = now))
+    }
     return sid
 }

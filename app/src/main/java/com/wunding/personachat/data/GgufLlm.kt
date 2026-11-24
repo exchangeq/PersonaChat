@@ -51,7 +51,9 @@ object GgufLlm {
         }
         return try {
             System.loadLibrary("personagguf")
-            handle = nativeLoad(path, threads.coerceIn(1, 4), app?.applicationInfo?.nativeLibraryDir ?: "", safeContext(path))
+            val totalMb = deviceTotalMb()
+            val safeThreads = threads.coerceIn(1, if (totalMb <= 6144L) 2 else 4)
+            handle = nativeLoad(path, safeThreads, app?.applicationInfo?.nativeLibraryDir ?: "", safeContext(path))
             if (handle == 0L) {
                 lastError = "加载失败：文件无效或内存不足"
                 lastError
@@ -130,11 +132,16 @@ object GgufLlm {
             val mi = ActivityManager.MemoryInfo(); am.getMemoryInfo(mi); mi.totalMem / (1024 * 1024)
         }.getOrDefault(4096L)
         return when {
-            modelMb >= 2500 || totalMb <= 4096 -> 512
+            modelMb >= 1800 || totalMb <= 4096 -> 512
             modelMb >= 1400 || totalMb <= 6144 -> 1024
             else -> 2048
         }
     }
+
+    private fun deviceTotalMb(): Long = runCatching {
+        val am = app?.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
+        val mi = ActivityManager.MemoryInfo(); am.getMemoryInfo(mi); mi.totalMem / (1024 * 1024)
+    }.getOrDefault(4096L)
 
     private external fun nativeLoad(path: String, threads: Int, libDir: String, ctxLimit: Int): Long
     private external fun nativeGenerate(
