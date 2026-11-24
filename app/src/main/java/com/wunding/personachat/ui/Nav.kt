@@ -21,6 +21,7 @@ fun PersonaNav(app: PersonaChatApp) {
                 onOpenPack = { id -> nav.navigate("detail/" + android.net.Uri.encode(id)) },
                 onOpenChat = { sid -> nav.navigate("chat/" + android.net.Uri.encode(sid)) },
                 onOpenSettings = { nav.navigate("settings") },
+                onOpenModels = { nav.navigate("models") },
                 onOpenSessions = { nav.navigate("sessions") },
             )
         }
@@ -57,7 +58,10 @@ fun PersonaNav(app: PersonaChatApp) {
             )
         }
         composable("settings") {
-            SettingsScreen(app = app, onBack = { nav.popBackStack() })
+            SettingsScreen(app = app, onBack = { nav.popBackStack() }, onOpenModels = { nav.navigate("models") })
+        }
+        composable("models") {
+            ModelStoreScreen(app = app, onBack = { nav.popBackStack() })
         }
     }
 }

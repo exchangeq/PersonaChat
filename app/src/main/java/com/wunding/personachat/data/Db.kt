@@ -53,11 +53,17 @@ interface PersonaDao {
     @Query("SELECT * FROM sessions WHERE id = :id")
     suspend fun session(id: String): SessionEntity?
 
+    @Query("SELECT * FROM sessions WHERE personaName = :name ORDER BY updatedAt DESC LIMIT 1")
+    suspend fun sessionForPersona(name: String): SessionEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun putSession(s: SessionEntity)
 
     @Query("DELETE FROM sessions WHERE id = :id")
     suspend fun deleteSession(id: String)
+
+    @Query("DELETE FROM messages WHERE sessionId = :sid")
+    suspend fun deleteMessages(sid: String)
 
     @Query("SELECT * FROM messages WHERE sessionId = :sid ORDER BY id ASC")
     fun messages(sid: String): Flow<List<MessageEntity>>

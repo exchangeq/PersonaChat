@@ -20,6 +20,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -70,6 +71,7 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
     var renameTarget by remember { mutableStateOf<SessionEntity?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<SessionEntity?>(null) }
+    var cleanConfirm by remember { mutableStateOf(false) }
     var exportJsonFor by remember { mutableStateOf<SessionEntity?>(null) }
     var exportMdFor by remember { mutableStateOf<SessionEntity?>(null) }
     var pendingJson by remember { mutableStateOf<String?>(null) }
@@ -89,6 +91,9 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
             TopAppBar(
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回") } },
                 title = { Text("会话", fontSize = 17.sp, fontWeight = FontWeight.SemiBold) },
+                actions = {
+                    TextButton(onClick = { cleanConfirm = true }) { Text("清理重复", fontSize = 11.sp) }
+                },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.background),
             )
         },
@@ -114,6 +119,9 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
                                     }
                                     Text(s.position.ifBlank { "角色扮演" }, fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                                     if (s.archived) StatusPill("已归档人设：" + s.personaName.substringBefore(" ·"), MaterialTheme.colorScheme.onSurfaceVariant, Modifier.padding(top = 3.dp))
+                                }
+                                IconButton(onClick = { deleteTarget = s }) {
+                                    Icon(Icons.Filled.Delete, "删除", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                         }
@@ -160,13 +168,46 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
             dismissButton = { TextButton(onClick = { renameTarget = null }) { Text("取消") } },
         )
     }
+    if (cleanConfirm) {
+        val dups = sessions.groupBy { it.personaName }.filter { it.value.size > 1 }
+        val extra = dups.values.map { it.size - 1 }.sum()
+        AlertDialog(
+            onDismissRequest = { cleanConfirm = false },
+            title = { Text("清理重复会话") },
+            text = { Text(if (extra == 0) "没有重复会话（同一人设只保留最新一个）。" else "检测到 ${dups.size} 个人设有重复，将删除 $extra 个旧会话及其消息，只保留每人设最新的对话。", fontSize = 12.sp) },
+            confirmButton = {
+                TextButton(enabled = extra > 0, onClick = {
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            dups.forEach { (_, list) ->
+                                list.sortedByDescending { it.updatedAt }.drop(1).forEach { old ->
+                                    app.db.dao().deleteMessages(old.id)
+                                    app.db.dao().deleteSession(old.id)
+                                }
+                            }
+                        }
+                    }
+                    cleanConfirm = false
+                }) { Text("清理") }
+            },
+            dismissButton = { TextButton(onClick = { cleanConfirm = false }) { Text("取消") } },
+        )
+    }
     deleteTarget?.let { s ->
         AlertDialog(
             onDismissRequest = { deleteTarget = null },
             title = { Text("删除 ${s.title}？") },
             text = { Text("消息会一起删除，不可恢复。", fontSize = 12.sp) },
             confirmButton = {
-                TextButton(onClick = { scope.launch { withContext(Dispatchers.IO) { app.db.dao().deleteSession(s.id) } }; deleteTarget = null }) { Text("删除") }
+                TextButton(onClick = {
+                    scope.launch {
+                        withContext(Dispatchers.IO) {
+                            app.db.dao().deleteMessages(s.id)
+                            app.db.dao().deleteSession(s.id)
+                        }
+                    }
+                    deleteTarget = null
+                }) { Text("删除") }
             },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
         )

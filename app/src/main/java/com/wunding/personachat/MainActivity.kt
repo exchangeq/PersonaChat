@@ -21,6 +21,7 @@ class PersonaChatApp : android.app.Application() {
     override fun onCreate() {
         super.onCreate()
         db = openDb(this)
+        com.wunding.personachat.data.AppStorage.root(this)
         com.wunding.personachat.data.DeviceLlm.init(this)
         com.wunding.personachat.data.GgufLlm.init(this)
     }

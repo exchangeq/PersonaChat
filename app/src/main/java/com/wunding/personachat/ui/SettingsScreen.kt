@@ -62,7 +62,7 @@ import kotlinx.coroutines.withTimeout
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
+fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpenModels: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     var s by remember { mutableStateOf(Settings()) }
     var testMsg by remember { mutableStateOf("") }
@@ -72,6 +72,8 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
     var update by remember { mutableStateOf<AppUpdate?>(null) }
     var updateMsg by remember { mutableStateOf("") }
     var dlProgress by remember { mutableStateOf(-1) }
+    var checking by remember { mutableStateOf(false) }
+    var lastCheckAt by remember { mutableStateOf(0L) }
 
     val context = LocalContext.current
     val modelPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -79,7 +81,7 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
             scope.launch {
                 runCatching {
                     withContext(Dispatchers.IO) {
-                        val dir = java.io.File(context.filesDir, "models").apply { mkdirs() }
+                        val dir = com.wunding.personachat.data.AppStorage.models(context)
                         val ext = if (uri.toString().endsWith("gguf", true)) ".gguf" else ".task"
                         val f = java.io.File(dir, "model$ext")
                         context.contentResolver.openInputStream(uri)?.use { input -> f.outputStream().use { input.copyTo(it) } }
@@ -137,6 +139,9 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
                             }
                         }, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) { Text("加载", fontSize = 10.5.sp) }
                     }
+                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        TextButton(onClick = onOpenModels, contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 4.dp)) { Text("模型库（下载 / 管理）", fontSize = 10.5.sp) }
+                    }
                     Text(
                         deviceMsg.ifBlank {
                             if (s.localModelPath.endsWith(".gguf", true)) com.wunding.personachat.data.GgufLlm.status()
@@ -144,6 +149,7 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
                         },
                         fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
+                    Text("模型目录：" + com.wunding.personachat.data.ModelStore.displayPath(context), fontSize = 8.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     OutlinedTextField(value = s.model, onValueChange = { s = s.copy(model = it) }, label = { Text("模型标签（用于判断对话模板）", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 } else {
                     OutlinedTextField(value = s.baseUrl, onValueChange = { s = s.copy(baseUrl = it) }, label = { Text("Base URL", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
@@ -222,7 +228,7 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
 
             Group("人设包仓库") {
                 OutlinedTextField(value = s.personaRepo, onValueChange = { s = s.copy(personaRepo = it) }, label = { Text("GitHub repo（owner/name）", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                Text("默认 exchangeq/PocketForge-Personas，530 个 .aist；首页云图标可浏览下载。", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("默认 exchangeq/PocketForge-Personas，700 个 .aist；首页云图标可浏览下载。", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
 
             Button(onClick = {
@@ -234,6 +240,13 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     Button(onClick = {
                         scope.launch {
+                            val now = System.currentTimeMillis()
+                            if (checking || now - lastCheckAt < 10000) {
+                                updateMsg = "刚检查过，稍等几秒再点，避免触发 GitHub 限流"
+                                return@launch
+                            }
+                            checking = true
+                            lastCheckAt = now
                             updateMsg = "检查中…"
                             runCatching { withContext(Dispatchers.IO) { UpdateManager.check(s.updateRepo) } }
                                 .onSuccess { u ->
@@ -243,9 +256,13 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit) {
                                         update = u; updateMsg = "发现新版本 v${u.version}（${u.size / 1024 / 1024}MB）"
                                     }
                                 }
-                                .onFailure { updateMsg = "检查失败：" + (it.message ?: "") }
+                                .onFailure {
+                                    val m = it.message ?: ""
+                                    updateMsg = if (m.contains("403") || m.contains("rate limit", true)) "请求太频繁，被 GitHub 限流了，等 1 分钟再试" else "检查失败：$m"
+                                }
+                            checking = false
                         }
-                    }, enabled = dlProgress < 0) { Text("检查更新", fontSize = 11.sp) }
+                    }, enabled = dlProgress < 0 && !checking) { Text(if (checking) "检查中…" else "检查更新", fontSize = 11.sp) }
                     update?.let { u ->
                         TextButton(onClick = {
                             scope.launch {

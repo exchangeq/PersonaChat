@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.FileOpen
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
@@ -83,6 +84,7 @@ fun HomeScreen(
     onOpenChat: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenSessions: () -> Unit,
+    onOpenModels: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var packs by remember { mutableStateOf<List<PersonaPack>>(emptyList()) }
@@ -92,6 +94,7 @@ fun HomeScreen(
     var showRemote by remember { mutableStateOf(false) }
     var remote by remember { mutableStateOf<List<RemotePack>>(emptyList()) }
     var remoteBusy by remember { mutableStateOf("") }
+    var remoteQuery by remember { mutableStateOf("") }
     val snack = remember { SnackbarHostState() }
     var refreshKey by remember { mutableStateOf(0) }
     var query by remember { mutableStateOf("") }
@@ -136,7 +139,7 @@ fun HomeScreen(
                             }.onSuccess { remote = it }.onFailure { error = "远程清单失败：" + (it.message ?: "") }
                         }
                     }) { Icon(Icons.Filled.CloudDownload, "远程包", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    IconButton(onClick = { showCreate = true }) { Icon(Icons.Filled.Add, "创建人设", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
+                    IconButton(onClick = onOpenModels) { Icon(Icons.Filled.Memory, "模型库", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     IconButton(onClick = { importer.launch(arrayOf("*/*")) }) { Icon(Icons.Filled.FileOpen, "导入", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     IconButton(onClick = { showCreate = true }) { Icon(Icons.Filled.Add, "创建人设", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
                     IconButton(onClick = onOpenSettings) { Icon(Icons.Filled.Settings, "设置", tint = MaterialTheme.colorScheme.onSurfaceVariant) }
@@ -152,16 +155,9 @@ fun HomeScreen(
             }
             OutlinedTextField(
                 value = query, onValueChange = { query = it },
-                placeholder = { Text("搜索角色名 / 定位 / 性格", fontSize = 11.sp) },
+                placeholder = { Text("搜索角色名 / 定位 / 性格 / 世界观", fontSize = 11.sp) },
                 singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
                 shape = RoundedCornerShape(12.dp),
-            )
-            OutlinedTextField(
-                value = query, onValueChange = { query = it },
-                placeholder = { Text("搜索角色名 / 定位", fontSize = 11.5.sp) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
-                shape = RoundedCornerShape(10.dp),
             )
             if (error.isNotBlank()) {
                 ErrorInlineCard(error, onRetry = { error = ""; refreshKey++ }, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
@@ -206,9 +202,16 @@ fun HomeScreen(
             title = { Text("创建人设", fontSize = 16.sp) },
             text = {
                 Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("随机生成：姓名 / 性格 / 世界观", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            val d = com.wunding.personachat.data.PersonaGen.generate()
+                            cName = d.name; cPos = d.position; cDesc = d.desc
+                        }) { Text("换一套", fontSize = 11.sp) }
+                    }
                     OutlinedTextField(value = cName, onValueChange = { cName = it }, label = { Text("名字", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
                     OutlinedTextField(value = cPos, onValueChange = { cPos = it }, label = { Text("定位（如 傲娇 · 猫娘）", fontSize = 10.sp) }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = cDesc, onValueChange = { cDesc = it }, label = { Text("性格、说话方式、雷点", fontSize = 10.sp) }, minLines = 4, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(value = cDesc, onValueChange = { cDesc = it }, label = { Text("性格 / 世界观 / 说话方式 / 雷点（可随机）", fontSize = 10.sp) }, minLines = 4, modifier = Modifier.fillMaxWidth())
                 }
             },
             confirmButton = {
@@ -264,8 +267,18 @@ fun HomeScreen(
             Column(Modifier.fillMaxWidth().padding(horizontal = 14.dp)) {
                 Text("远程包库 · ${remote.size} 个", fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
                 if (remote.isEmpty()) Text("没拉到清单，检查设置里的仓库名或网络", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                OutlinedTextField(
+                    value = remoteQuery, onValueChange = { remoteQuery = it },
+                    placeholder = { Text("搜索远程角色：名字 / 定位 / 世界观", fontSize = 11.sp) },
+                    singleLine = true, modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                    shape = RoundedCornerShape(10.dp),
+                )
+                val remoteVisible = remote.filter {
+                    remoteQuery.isBlank() || it.name.contains(remoteQuery, true) || it.desc.contains(remoteQuery, true)
+                }
+                if (remoteVisible.isEmpty()) Text("远程库里没有匹配“$remoteQuery”的角色", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 LazyColumn(Modifier.fillMaxWidth().height(440.dp)) {
-                    items(remote, key = { it.id }) { r ->
+                    items(remoteVisible, key = { it.id }) { r ->
                         Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                             InitialAvatar(r.name, 32.dp)
                             Spacer(Modifier.size(8.dp))
@@ -342,6 +355,16 @@ private fun PackRow(pack: PersonaPack, onOpen: () -> Unit, onChat: () -> Unit, o
 }
 
 suspend fun startSession(app: PersonaChatApp, pack: PersonaPack): String {
+    val now0 = System.currentTimeMillis()
+    // 同一个人设只保留一个会话：再次“加载”直接回到原对话，不再新开
+    val existing = app.db.dao().sessionForPersona(pack.name)
+    if (existing != null) {
+        app.db.dao().putSession(existing.copy(
+            personaFull = pack.fullText, position = pack.position,
+            archived = false, updatedAt = now0,
+        ))
+        return existing.id
+    }
     val sid = newSessionId()
     val now = System.currentTimeMillis()
     val title = pack.character + " 对话 " + SimpleDateFormat("HH:mm", Locale.US).format(Date(now))
