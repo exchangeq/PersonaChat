@@ -84,7 +84,7 @@ object ModelStore {
 
     fun isDownloaded(ctx: Context, m: GgufModel): Boolean = File(dir(ctx), m.fileName).let { it.exists() && it.length() > 1024 * 1024 }
 
-    /** 下载到临时 .part，校验 GGUF 魔数后改名；取消时清理残片。 */
+    /** 下载到临时 .part（支持断点续传），校验 GGUF 魔数后改名；取消保留残片以便续传。 */
     suspend fun download(
         ctx: Context,
         model: GgufModel,
@@ -95,53 +95,24 @@ object ModelStore {
         if (target.exists() && target.length() > 1024 * 1024) return@withContext target
         val part = File(dir(ctx), model.fileName + ".part")
         val url = if (mirror) model.msUrl else model.hfUrl
-        var conn: HttpURLConnection? = null
         try {
-            conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = true
-                connectTimeout = 20000
-                readTimeout = 60000
-                setRequestProperty("User-Agent", "PersonaChat/1.3")
-                setRequestProperty("Accept", "application/octet-stream")
-            }
-            val code = conn.responseCode
-            if (code !in 200..299) throw IllegalStateException("HTTP $code，换镜像或稍后重试")
-            val total = conn.contentLengthLong
-            conn.inputStream.use { input ->
-                part.outputStream().use { out ->
-                    val buf = ByteArray(64 * 1024)
-                    var done = 0L
-                    while (true) {
-                        ensureActive()
-                        val n = input.read(buf)
-                        if (n <= 0) break
-                        out.write(buf, 0, n)
-                        done += n
-                        onProgress(done, if (total > 0) total else 0L)
-                    }
-                }
-            }
+            if (!parallelFetch(url, part, onProgress)) fetch(url, part, onProgress)
             if (part.length() < 1024 * 1024) throw IllegalStateException("文件过小，可能被拦截或地址失效")
-            // GGUF 魔数校验
-            val magic = part.inputStream().use { it.readNBytes(4) }
+            val magic = head(part, 4)
             if (magic.size < 4 || magic[0] != 'G'.code.toByte() || magic[1] != 'G'.code.toByte() ||
                 magic[2] != 'U'.code.toByte() || magic[3] != 'F'.code.toByte()
             ) throw IllegalStateException("不是有效 GGUF 文件")
             if (target.exists()) target.delete()
-            part.renameTo(target)
+            if (!part.renameTo(target)) throw IllegalStateException("无法写入模型目录")
             target
         } catch (e: CancellationException) {
-            runCatching { part.delete() }
             throw e
         } catch (e: Throwable) {
-            runCatching { part.delete() }
             throw e
-        } finally {
-            conn?.disconnect()
         }
     }
 
-    /** 自定义直链下载：文件名取自 URL，非法字符替换。 */
+    /** 自定义直链下载：文件名取自 URL，非法字符替换；同样支持断点续传。 */
     suspend fun downloadUrl(
         ctx: Context,
         url: String,
@@ -151,44 +122,139 @@ object ModelStore {
         val name = raw.replace(Regex("[^A-Za-z0-9._-]"), "_").let { if (it.endsWith(".gguf", true)) it else "$it.gguf" }
         val target = File(dir(ctx), name)
         val part = File(dir(ctx), name + ".part")
-        var conn: HttpURLConnection? = null
-        try {
-            conn = (URL(url).openConnection() as HttpURLConnection).apply {
-                instanceFollowRedirects = true
-                connectTimeout = 20000
-                readTimeout = 60000
-                setRequestProperty("User-Agent", "PersonaChat/1.3")
+        if (!parallelFetch(url, part, onProgress)) fetch(url, part, onProgress)
+        if (part.length() < 1024 * 1024) throw IllegalStateException("文件过小，链接可能不是直链")
+        val magic = head(part, 4)
+        if (magic.size < 4 || magic[0] != 'G'.code.toByte() || magic[1] != 'G'.code.toByte() ||
+            magic[2] != 'U'.code.toByte() || magic[3] != 'F'.code.toByte()
+        ) throw IllegalStateException("不是有效 GGUF 文件")
+        if (target.exists()) target.delete()
+        if (!part.renameTo(target)) throw IllegalStateException("无法写入模型目录")
+        target
+    }
+
+    /**
+     * 4 段 Range 并行下载：HF / ModelScope 对单连接限速，多连接通常能明显提速。
+     * 返回 false 表示不支持或任一段失败，调用方回退单流（会清理残片）。
+     */
+    private fun parallelFetch(url: String, part: File, onProgress: (Long, Long) -> Unit): Boolean {
+        val total = probeTotal(url) ?: return false
+        if (total < 8L * 1024 * 1024) return false
+        runCatching { part.delete() }
+        val threads = 4
+        val chunk = total / threads
+        val done = java.util.concurrent.atomic.AtomicLong(0)
+        val errors = java.util.concurrent.atomic.AtomicInteger(0)
+        val started = System.currentTimeMillis()
+        var lastEmit = 0L
+        val workers = (0 until threads).map { i ->
+            val start = i * chunk
+            val end = if (i == threads - 1) total - 1 else start + chunk - 1
+            kotlin.concurrent.thread {
+                runCatching {
+                    val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                        instanceFollowRedirects = true
+                        connectTimeout = 20000
+                        readTimeout = 60000
+                        setRequestProperty("User-Agent", "PersonaChat/1.4")
+                        setRequestProperty("Accept", "application/octet-stream")
+                        setRequestProperty("Range", "bytes=$start-$end")
+                    }
+                    try {
+                        if (conn.responseCode != 206) throw IllegalStateException("不支持分段")
+                        java.io.RandomAccessFile(part, "rw").use { raf ->
+                            raf.seek(start)
+                            conn.inputStream.use { input ->
+                                val buf = ByteArray(64 * 1024)
+                                while (true) {
+                                    val n = input.read(buf)
+                                    if (n <= 0) break
+                                    raf.write(buf, 0, n)
+                                    val d = done.addAndGet(n.toLong())
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastEmit > 120 || d >= total) {
+                                        lastEmit = now
+                                        onProgress(d, total)
+                                    }
+                                }
+                            }
+                        }
+                    } finally { conn.disconnect() }
+                }.onFailure { errors.incrementAndGet() }
             }
+        }
+        workers.forEach { it.join() }
+        if (errors.get() > 0 || part.length() != total) {
+            runCatching { part.delete() }
+            return false
+        }
+        onProgress(total, total)
+        return true
+    }
+
+    /** 探测文件总大小（Range 0-0 的 Content-Range），失败返回 null。 */
+    private fun probeTotal(url: String): Long? {
+        return try {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                instanceFollowRedirects = true
+                connectTimeout = 15000
+                readTimeout = 20000
+                setRequestProperty("User-Agent", "PersonaChat/1.4")
+                setRequestProperty("Range", "bytes=0-0")
+            }
+            try {
+                if (conn.responseCode != 206) null
+                else conn.getHeaderField("Content-Range").orEmpty().substringAfter('/').trim().toLongOrNull()
+            } finally { conn.disconnect() }
+        } catch (_: Throwable) { null }
+    }
+
+    /** 断点续传：有 .part 就带 Range 续，服务器不支持则从头写。 */
+    private suspend fun fetch(url: String, part: File, onProgress: (Long, Long) -> Unit) {
+        val start = if (part.exists()) part.length() else 0L
+        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            instanceFollowRedirects = true
+            connectTimeout = 20000
+            readTimeout = 60000
+            setRequestProperty("User-Agent", "PersonaChat/1.4")
+            setRequestProperty("Accept", "application/octet-stream")
+            if (start > 0) setRequestProperty("Range", "bytes=$start-")
+        }
+        try {
             val code = conn.responseCode
-            if (code !in 200..299) throw IllegalStateException("HTTP $code")
-            val total = conn.contentLengthLong
+            val append = code == 206 && start > 0
+            if (code !in 200..299) throw IllegalStateException("HTTP $code，换镜像或稍后重试")
+            if (!append && part.exists()) part.delete()
+            val base = if (append) start else 0L
+            val total = if (conn.contentLengthLong > 0) base + conn.contentLengthLong else 0L
             conn.inputStream.use { input ->
-                part.outputStream().use { out ->
+                java.io.FileOutputStream(part, append).use { out ->
                     val buf = ByteArray(64 * 1024)
-                    var done = 0L
+                    var done = base
                     while (true) {
-                        ensureActive()
                         val n = input.read(buf)
                         if (n <= 0) break
-                        out.write(buf, 0, n); done += n
-                        onProgress(done, if (total > 0) total else 0L)
+                        out.write(buf, 0, n)
+                        done += n
+                        onProgress(done, total)
                     }
                 }
             }
-            if (part.length() < 1024 * 1024) throw IllegalStateException("文件过小，链接可能不是直链")
-            val magic = part.inputStream().use { it.readNBytes(4) }
-            if (magic.size < 4 || magic[0] != 'G'.code.toByte() || magic[1] != 'G'.code.toByte() ||
-                magic[2] != 'U'.code.toByte() || magic[3] != 'F'.code.toByte()
-            ) throw IllegalStateException("不是有效 GGUF 文件")
-            if (target.exists()) target.delete()
-            part.renameTo(target)
-            target
-        } catch (e: CancellationException) {
-            runCatching { part.delete() }; throw e
-        } catch (e: Throwable) {
-            runCatching { part.delete() }; throw e
         } finally {
-            conn?.disconnect()
+            conn.disconnect()
+        }
+    }
+
+    private fun head(f: File, n: Int): ByteArray {
+        java.io.FileInputStream(f).use { input ->
+            val b = ByteArray(n)
+            var off = 0
+            while (off < n) {
+                val r = input.read(b, off, n - off)
+                if (r <= 0) break
+                off += r
+            }
+            return if (off == n) b else b.copyOf(off)
         }
     }
 }

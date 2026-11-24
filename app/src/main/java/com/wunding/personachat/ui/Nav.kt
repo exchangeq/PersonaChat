@@ -32,6 +32,7 @@ fun PersonaNav(app: PersonaChatApp) {
                 packId = java.net.URLDecoder.decode(id, "UTF-8"),
                 onBack = { nav.popBackStack() },
                 onStartChat = { sid -> nav.navigate("chat/" + android.net.Uri.encode(sid)) },
+                onOpenChats = { nav.navigate("personaChats/" + android.net.Uri.encode(id)) },
             )
         }
         composable("chat/{sid}") { back ->
@@ -44,6 +45,15 @@ fun PersonaNav(app: PersonaChatApp) {
                 onMemory = { id -> nav.navigate("memory/" + android.net.Uri.encode(id)) },
                 onSettings = { nav.navigate("settings") },
                 onSwitchSession = { sid -> nav.navigate("chat/" + android.net.Uri.encode(sid)) },
+            )
+        }
+        composable("personaChats/{id}") { back ->
+            val id = back.arguments?.getString("id") ?: ""
+            PersonaChatsScreen(
+                app = app,
+                packId = java.net.URLDecoder.decode(id, "UTF-8"),
+                onBack = { nav.popBackStack() },
+                onOpen = { sid -> nav.navigate("chat/" + android.net.Uri.encode(sid)) },
             )
         }
         composable("memory/{sid}") { back ->

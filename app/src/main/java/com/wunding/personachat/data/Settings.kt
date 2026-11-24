@@ -31,6 +31,11 @@ data class Settings(
     val localModelPath: String = "",
     val localBackend: String = "gpu",   // gpu / cpu
     val updateRepo: String = "exchangeq/PersonaChat",
+    val autoRead: Boolean = false,
+    val voiceProfile: String = "default",
+    val fontScale: Float = 1.0f,
+    /** 置顶会话 id，逗号分隔 */
+    val pinned: String = "",
 )
 
 object SettingsStore {
@@ -52,6 +57,10 @@ object SettingsStore {
         val localModel = stringPreferencesKey("local_model")
         val localBackend = stringPreferencesKey("local_backend")
         val updateRepo = stringPreferencesKey("update_repo")
+        val autoRead = booleanPreferencesKey("auto_read")
+        val voiceProfile = stringPreferencesKey("voice_profile")
+        val fontScale = floatPreferencesKey("font_scale")
+        val pinned = stringPreferencesKey("pinned")
     }
 
     fun flow(context: Context): Flow<Settings> = context.dataStore.data.map { p ->
@@ -73,6 +82,10 @@ object SettingsStore {
             localModelPath = p[K.localModel] ?: "",
             localBackend = p[K.localBackend] ?: "gpu",
             updateRepo = p[K.updateRepo] ?: "exchangeq/PersonaChat",
+            autoRead = p[K.autoRead] ?: false,
+            voiceProfile = p[K.voiceProfile] ?: "default",
+            fontScale = p[K.fontScale] ?: 1.0f,
+            pinned = p[K.pinned] ?: "",
         )
     }
 
@@ -95,6 +108,10 @@ object SettingsStore {
             p[K.localModel] = s.localModelPath
             p[K.localBackend] = s.localBackend
             p[K.updateRepo] = s.updateRepo
+            p[K.autoRead] = s.autoRead
+            p[K.voiceProfile] = s.voiceProfile
+            p[K.fontScale] = s.fontScale
+            p[K.pinned] = s.pinned
         }
     }
 }

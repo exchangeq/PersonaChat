@@ -31,7 +31,10 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -102,10 +105,26 @@ fun ChatScreen(
     val allSessions by app.db.dao().sessions().collectAsState(initial = emptyList())
     var editing by remember { mutableStateOf<MessageEntity?>(null) }
     var editText by remember { mutableStateOf("") }
+    var topMenu by remember { mutableStateOf(false) }
+    var confirmClear by remember { mutableStateOf(false) }
+    var consentOk by remember { mutableStateOf(true) }
+    var requestStart by remember { mutableStateOf(0L) }
+    var elapsedSec by remember { mutableStateOf(0) }
+    var lastOkAt by remember { mutableStateOf(0L) }
 
     LaunchedEffect(sessionId) {
         session = withContext(Dispatchers.IO) { app.db.dao().session(sessionId) }
         settings = SettingsStore.flow(app).first()
+        input = context.getSharedPreferences("drafts", 0).getString("d-$sessionId", "").orEmpty()
+        val se = session
+        consentOk = se == null || !com.wunding.personachat.data.Consent.required(se.personaName, se.position, se.personaFull) ||
+            com.wunding.personachat.data.Consent.accepted(context, se.personaName)
+    }
+    LaunchedEffect(sending) {
+        while (sending) {
+            elapsedSec = ((System.currentTimeMillis() - requestStart) / 1000).toInt()
+            kotlinx.coroutines.delay(500)
+        }
     }
     LaunchedEffect(sessionId) {
         app.db.dao().messages(sessionId).collectLatest { list ->
@@ -133,6 +152,7 @@ fun ChatScreen(
         if (content.isEmpty()) return
         lastText = content
         sending = true; error = ""; streamText = ""; input = ""
+        requestStart = System.currentTimeMillis(); elapsedSec = 0; lastOkAt = 0L
         job = scope.launch {
             try {
                 if (appendUser) withContext(Dispatchers.IO) {
@@ -166,6 +186,12 @@ fun ChatScreen(
                     }
                 }
                 streamText = ""
+                lastOkAt = System.currentTimeMillis()
+                if (settings.autoRead) {
+                    val profile = com.wunding.personachat.data.Voice.profiles.firstOrNull { it.id == settings.voiceProfile }
+                        ?: com.wunding.personachat.data.Voice.profiles.first()
+                    com.wunding.personachat.data.Voice.speak(reply, profile)
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 val partial = streamText.trim()
                 if (partial.isNotEmpty()) withContext(Dispatchers.IO) {
@@ -203,6 +229,34 @@ fun ChatScreen(
                         })
                         Text(if (session?.fullMode == true) "完整人设" else "纯净", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
+                    Box {
+                        IconButton(onClick = { topMenu = true }) { Icon(Icons.Default.MoreVert, "更多") }
+                        DropdownMenu(expanded = topMenu, onDismissRequest = { topMenu = false }) {
+                            DropdownMenuItem(text = { Text("复制整段对话", fontSize = 12.sp) }, onClick = {
+                                topMenu = false
+                                val text = messagesState.value.joinToString("\n\n") { (if (it.role == "user") "我：" else "${it.role}：") + it.content }
+                                copyText(context, text)
+                            })
+                            DropdownMenuItem(text = { Text(if (settings.autoRead) "关闭自动朗读" else "自动朗读回复", fontSize = 12.sp) }, onClick = {
+                                topMenu = false
+                                scope.launch {
+                                    settings = settings.copy(autoRead = !settings.autoRead)
+                                    SettingsStore.save(app, settings)
+                                }
+                            })
+                            DropdownMenuItem(text = { Text("导出 / 分享对话", fontSize = 12.sp) }, onClick = {
+                                topMenu = false
+                                val head = "${session?.personaName ?: "对话"}\n" + "—".repeat(20) + "\n"
+                                val body = messagesState.value.joinToString("\n\n") { (if (it.role == "user") "我：" else "${it.role}：") + it.content }
+                                val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(android.content.Intent.EXTRA_TEXT, head + body)
+                                }
+                                runCatching { context.startActivity(android.content.Intent.createChooser(intent, "导出对话")) }
+                            })
+                            DropdownMenuItem(text = { Text("清空当前对话", fontSize = 12.sp) }, onClick = { topMenu = false; confirmClear = true })
+                        }
+                    }
                 }
             }
         },
@@ -228,9 +282,18 @@ fun ChatScreen(
                 verticalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 val rows = messagesState.value
+                if (sending && streamText.isEmpty()) {
+                    item(key = "waiting") {
+                        MessageBubble(
+                            MessageEntity(sessionId = sessionId, role = "assistant", content = "正在请求模型…（已 ${elapsedSec}s）", ts = System.currentTimeMillis()),
+                            character = session?.personaName?.substringBefore(" ·") ?: "",
+                            onCopy = {}, onDelete = {}, onRemember = {}, streaming = true, fontScale = settings.fontScale,
+                        )
+                    }
+                }
                 if (streamText.isNotEmpty()) {
                     item(key = "stream") {
-                        MessageBubble(MessageEntity(sessionId = sessionId, role = "assistant", content = streamText, ts = System.currentTimeMillis()), character = session?.personaName?.substringBefore(" ·") ?: "", onCopy = { copyText(context, streamText) }, onDelete = {}, onRemember = {}, streaming = true)
+                        MessageBubble(MessageEntity(sessionId = sessionId, role = "assistant", content = streamText, ts = System.currentTimeMillis()), character = session?.personaName?.substringBefore(" ·") ?: "", onCopy = { copyText(context, streamText) }, onDelete = {}, onRemember = {}, streaming = true, fontScale = settings.fontScale)
                     }
                 }
                 items(rows.reversed(), key = { it.id }) { m ->
@@ -238,6 +301,7 @@ fun ChatScreen(
                         m,
                         character = session?.personaName?.substringBefore(" ·") ?: "",
                         onCopy = { copyText(context, m.content) },
+                        onSpeak = { com.wunding.personachat.data.Voice.speak(m.content, com.wunding.personachat.data.Voice.profiles.firstOrNull { it.id == settings.voiceProfile } ?: com.wunding.personachat.data.Voice.profiles.first()) },
                         onDelete = { scope.launch { withContext(Dispatchers.IO) { app.db.dao().deleteMessage(m.id) } } },
                         onRemember = {
                             scope.launch {
@@ -247,6 +311,7 @@ fun ChatScreen(
                                 refreshCounts()
                             }
                         },
+                        fontScale = settings.fontScale,
                         onEdit = { editing = m; editText = m.content },
                         onRegenerate = if (m.role == "assistant" && m.id == messagesState.value.lastOrNull()?.id) {
                             {
@@ -271,6 +336,24 @@ fun ChatScreen(
             if (session?.archived == true) {
                 Text("已归档人设：重新导入相同包后可继续对话；当前只读查看历史。", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.error, modifier = Modifier.padding(horizontal = 12.dp, vertical = 2.dp))
             }
+            val statusText = when {
+                sending && streamText.isEmpty() -> "● 正在发送请求… ${elapsedSec}s"
+                sending -> "● 正在接收回复… ${streamText.length} 字"
+                error.isNotBlank() -> "● 请求失败"
+                lastOkAt > 0 -> "● 请求成功 · " + java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(java.util.Date(lastOkAt))
+                else -> "○ 尚未发送请求"
+            }
+            Text(
+                statusText,
+                fontSize = 9.5.sp,
+                color = when {
+                    error.isNotBlank() -> MaterialTheme.colorScheme.error
+                    sending -> MaterialTheme.colorScheme.primary
+                    lastOkAt > 0 -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 1.dp),
+            )
             Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     if (settings.memoryEnabled) "记忆：开 · 短期 $shortCount 条 · 长期 $memCount 条" else "纯净模式：仅人设注入",
@@ -279,10 +362,39 @@ fun ChatScreen(
                 TextButton(onClick = { onMemory(sessionId) }, contentPadding = PaddingValues(horizontal = 6.dp)) { Text("管理记忆", fontSize = 10.sp) }
                 if (sending) TextButton(onClick = { com.wunding.personachat.data.GgufLlm.cancel(); job?.cancel(); job = null }) { Text("停止生成", fontSize = 10.sp, color = MaterialTheme.colorScheme.error) }
             }
+            if (!consentOk && session != null) {
+                MatureConsentDialog(
+                    personaName = session!!.personaName,
+                    onAgree = {
+                        com.wunding.personachat.data.Consent.accept(context, session!!.personaName)
+                        consentOk = true
+                    },
+                    onDecline = onBack,
+                )
+            }
+            if (confirmClear) {
+                AlertDialog(
+                    onDismissRequest = { confirmClear = false },
+                    title = { Text("清空当前对话？") },
+                    text = { Text("会删除本会话全部消息，保留会话与人设，不可恢复。", fontSize = 12.sp) },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            scope.launch {
+                                withContext(Dispatchers.IO) { app.db.dao().deleteMessages(sessionId) }
+                                confirmClear = false
+                            }
+                        }) { Text("清空") }
+                    },
+                    dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("取消") } },
+                )
+            }
             Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.Bottom) {
                 OutlinedTextField(
-                    value = input, onValueChange = { input = it },
-                    enabled = session?.archived != true,
+                    value = input, onValueChange = {
+                        input = it
+                        context.getSharedPreferences("drafts", 0).edit().putString("d-$sessionId", it).apply()
+                    },
+                    enabled = session?.archived != true && consentOk,
                     modifier = Modifier.weight(1f).heightIn(min = 44.dp, max = 120.dp),
                     placeholder = { Text(if (session?.fullMode == true) "说点什么…" else "纯净模式：只注入人设…", fontSize = 12.sp) },
                     maxLines = 5,
@@ -294,7 +406,7 @@ fun ChatScreen(
                     color = if (sending || input.isBlank()) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.primary,
                     shape = RoundedCornerShape(50),
                 ) {
-                    IconButton(onClick = { send(input) }, enabled = !sending && input.isNotBlank() && session?.archived != true) {
+                    IconButton(onClick = { send(input) }, enabled = !sending && input.isNotBlank() && session?.archived != true && consentOk) {
                         Icon(Icons.AutoMirrored.Filled.Send, "发送", tint = if (sending || input.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onPrimary)
                     }
                 }
@@ -312,8 +424,20 @@ fun ChatScreen(
             confirmButton = {
                 TextButton(onClick = {
                     val body = editText.trim()
-                    if (body.isNotEmpty()) scope.launch { withContext(Dispatchers.IO) { app.db.dao().updateMessage(m.id, body) } }
-                    editing = null
+                    if (body.isNotEmpty()) scope.launch {
+                        if (m.role == "user") {
+                            withContext(Dispatchers.IO) {
+                                app.db.dao().updateMessage(m.id, body)
+                                app.db.dao().deleteAfter(sessionId, m.id)
+                            }
+                            editing = null
+                            streamText = ""
+                            send(body, appendUser = false)
+                        } else {
+                            withContext(Dispatchers.IO) { app.db.dao().updateMessage(m.id, body) }
+                            editing = null
+                        }
+                    }
                 }) { Text("保存") }
             },
             dismissButton = { TextButton(onClick = { editing = null }) { Text("取消") } },
@@ -332,7 +456,7 @@ private fun copyText(context: Context, text: String) {
 
 @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
-private fun MessageBubble(m: MessageEntity, character: String, onCopy: () -> Unit, onDelete: () -> Unit, onRemember: () -> Unit, onEdit: (() -> Unit)? = null, onRegenerate: (() -> Unit)? = null, streaming: Boolean = false) {
+private fun MessageBubble(m: MessageEntity, character: String, onCopy: () -> Unit, onDelete: () -> Unit, onRemember: () -> Unit, onEdit: (() -> Unit)? = null, onRegenerate: (() -> Unit)? = null, onSpeak: (() -> Unit)? = null, streaming: Boolean = false, fontScale: Float = 1f) {
     var menu by remember { mutableStateOf(false) }
     val user = m.role == "user"
     Column(Modifier.fillMaxWidth(), horizontalAlignment = if (user) Alignment.End else Alignment.Start) {
@@ -345,7 +469,7 @@ private fun MessageBubble(m: MessageEntity, character: String, onCopy: () -> Uni
             ) {
                 Column(Modifier.padding(horizontal = 11.dp, vertical = 8.dp)) {
                     Row {
-                        Text(m.content, fontSize = 13.5.sp, lineHeight = 19.sp, color = MaterialTheme.colorScheme.onSurface)
+                        Text(m.content, fontSize = (13.5 * fontScale).sp, lineHeight = (19 * fontScale).sp, color = MaterialTheme.colorScheme.onSurface)
                         if (streaming) {
                             val blink = rememberInfiniteTransition(label = "cursor")
                             val a by blink.animateFloat(
@@ -362,6 +486,7 @@ private fun MessageBubble(m: MessageEntity, character: String, onCopy: () -> Uni
             }
             DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                 DropdownMenuItem(text = { Text("复制", fontSize = 12.sp) }, onClick = { menu = false; onCopy() })
+                    onSpeak?.let { sp -> DropdownMenuItem(text = { Text("朗读这条", fontSize = 12.sp) }, onClick = { menu = false; sp() }) }
                 if (onEdit != null) DropdownMenuItem(text = { Text("编辑这条", fontSize = 12.sp) }, onClick = { menu = false; onEdit() })
                 if (!user) {
                     DropdownMenuItem(text = { Text("加入永久记忆", fontSize = 12.sp) }, onClick = { menu = false; onRemember() })

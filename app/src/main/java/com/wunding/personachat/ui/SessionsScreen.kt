@@ -21,6 +21,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.StarBorder
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -37,6 +39,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -52,6 +55,9 @@ import androidx.compose.ui.unit.sp
 import com.wunding.personachat.PersonaChatApp
 import com.wunding.personachat.data.MessageEntity
 import com.wunding.personachat.data.SessionEntity
+import com.wunding.personachat.data.Settings
+import com.wunding.personachat.data.SettingsStore
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -72,10 +78,18 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
     var renameText by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<SessionEntity?>(null) }
     var cleanConfirm by remember { mutableStateOf(false) }
+    var settings by remember { mutableStateOf(Settings()) }
+    var query by remember { mutableStateOf("") }
     var exportJsonFor by remember { mutableStateOf<SessionEntity?>(null) }
     var exportMdFor by remember { mutableStateOf<SessionEntity?>(null) }
     var pendingJson by remember { mutableStateOf<String?>(null) }
     var pendingMd by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(Unit) { settings = SettingsStore.flow(app).first() }
+    val pinned = settings.pinned.split(",").filter { it.isNotBlank() }.toSet()
+    val visibleSessions = sessions.filter {
+        query.isBlank() || it.title.contains(query, true) || it.personaName.contains(query, true) || it.position.contains(query, true)
+    }.sortedWith(compareByDescending<SessionEntity> { it.id in pinned }.thenByDescending { it.updatedAt })
 
     val jsonLauncher = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri: Uri? ->
         val body = pendingJson
@@ -101,8 +115,15 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
         if (sessions.isEmpty()) {
             EmptyStateCanvas("还没有会话。回首页选一个人设包开始。", Modifier.padding(pad))
         } else {
-            LazyColumn(Modifier.fillMaxSize().padding(pad), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(sessions, key = { it.id }) { s ->
+            Column(Modifier.fillMaxSize().padding(pad)) {
+                OutlinedTextField(
+                    value = query, onValueChange = { query = it },
+                    placeholder = { Text("搜索会话 / 人设 / 定位", fontSize = 11.sp) },
+                    singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+                    shape = RoundedCornerShape(10.dp),
+                )
+            LazyColumn(Modifier.fillMaxWidth().weight(1f), contentPadding = PaddingValues(horizontal = 14.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(visibleSessions, key = { it.id }) { s ->
                     Box2 {
                         Card(
                             modifier = Modifier.fillMaxWidth().combinedClickable(onClick = { if (!s.archived) onOpen(s.id) else onOpen(s.id) }, onLongClick = { menuFor = s }),
@@ -119,6 +140,12 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
                                     }
                                     Text(s.position.ifBlank { "角色扮演" }, fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
                                     if (s.archived) StatusPill("已归档人设：" + s.personaName.substringBefore(" ·"), MaterialTheme.colorScheme.onSurfaceVariant, Modifier.padding(top = 3.dp))
+                                }
+                                IconButton(onClick = {
+                                    val now = if (s.id in pinned) settings.pinned.split(",").filter { it.isNotBlank() && it != s.id }.joinToString(",") else (settings.pinned.split(",").filter { it.isNotBlank() } + s.id).joinToString(",")
+                                    scope.launch { settings = settings.copy(pinned = now); SettingsStore.save(app, settings) }
+                                }) {
+                                    Icon(if (s.id in pinned) Icons.Filled.Star else Icons.Filled.StarBorder, "置顶", Modifier.size(18.dp), tint = if (s.id in pinned) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 IconButton(onClick = { deleteTarget = s }) {
                                     Icon(Icons.Filled.Delete, "删除", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -149,6 +176,7 @@ fun SessionsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpen: (String) -> 
                         }
                     }
                 }
+            }
             }
         }
     }

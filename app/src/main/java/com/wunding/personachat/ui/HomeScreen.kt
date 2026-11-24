@@ -31,11 +31,13 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -98,6 +100,7 @@ fun HomeScreen(
     val snack = remember { SnackbarHostState() }
     var refreshKey by remember { mutableStateOf(0) }
     var query by remember { mutableStateOf("") }
+    var tagFilter by remember { mutableStateOf("全部") }
     var showCreate by remember { mutableStateOf(false) }
     var cName by remember { mutableStateOf("") }
     var cPos by remember { mutableStateOf("") }
@@ -159,6 +162,11 @@ fun HomeScreen(
                 singleLine = true, modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 2.dp),
                 shape = RoundedCornerShape(12.dp),
             )
+            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                listOf("全部", "二次元", "病娇", "日常").forEach { f ->
+                    FilterChip(selected = tagFilter == f, onClick = { tagFilter = f }, label = { Text(f, fontSize = 9.5.sp) })
+                }
+            }
             if (error.isNotBlank()) {
                 ErrorInlineCard(error, onRetry = { error = ""; refreshKey++ }, modifier = Modifier.padding(horizontal = 14.dp, vertical = 4.dp))
             }
@@ -166,7 +174,14 @@ fun HomeScreen(
                 Box(Modifier.fillMaxWidth().padding(18.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp) }
             }
             val visible = packs.filter { p ->
-                query.isBlank() || p.name.contains(query, true) || p.position.contains(query, true) || p.character.contains(query, true)
+                val hitQuery = query.isBlank() || p.name.contains(query, true) || p.position.contains(query, true) || p.character.contains(query, true) || p.fullText.contains(query, true)
+                val hitTag = when (tagFilter) {
+                    "二次元" -> p.position.contains("魔法") || p.position.contains("机娘") || p.position.contains("忍者") || p.position.contains("猎人") || p.position.contains("阴阳师") || p.position.contains("龙族") || p.position.contains("偶像") || p.position.contains("女仆") || p.position.contains("骑士") || p.position.contains("旅行者")
+                    "病娇" -> p.position.contains("病娇") || p.fullText.contains("病娇")
+                    "日常" -> p.position.contains("日常") || p.position.isBlank()
+                    else -> true
+                }
+                hitQuery && hitTag
             }
             if (visible.isEmpty() && !loading) {
                 EmptyStateCanvas(if (query.isBlank()) "还没有人设包。点右上角导入 .aist / zip / PNG 角色卡，或从远程包库拉取。" else "没有匹配“$query”的包。")

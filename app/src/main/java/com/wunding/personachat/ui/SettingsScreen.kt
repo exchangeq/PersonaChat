@@ -213,6 +213,44 @@ fun SettingsScreen(app: PersonaChatApp, onBack: () -> Unit, onOpenModels: () -> 
                 Slider(value = s.recallK.toFloat(), onValueChange = { s = s.copy(recallK = it.toInt()) }, valueRange = 2f..10f, steps = 7)
             }
 
+            Group("朗读与显示") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("自动朗读 AI 回复", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                        Text("用系统离线中文音色；后续可接角色语音模型（已预留 voiceId）", fontSize = 9.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    Switch(checked = s.autoRead, onCheckedChange = { s = s.copy(autoRead = it) })
+                }
+                Text("角色音色", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    com.wunding.personachat.data.Voice.profiles.forEach { v ->
+                        FilterChip(selected = s.voiceProfile == v.id, onClick = { s = s.copy(voiceProfile = v.id) }, label = { Text(v.label, fontSize = 10.sp) })
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("试听", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.weight(1f))
+                    TextButton(onClick = {
+                        val p = com.wunding.personachat.data.Voice.profiles.firstOrNull { it.id == s.voiceProfile } ?: com.wunding.personachat.data.Voice.profiles.first()
+                        com.wunding.personachat.data.Voice.speak("（轻声）今天辛苦了，先坐下吧。", p)
+                    }) { Text("播一句", fontSize = 10.5.sp) }
+                    TextButton(onClick = { com.wunding.personachat.data.Voice.stop() }) { Text("停止", fontSize = 10.5.sp) }
+                }
+                Text("对话字号", fontSize = 10.5.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(0.92f to "小", 1.0f to "标准", 1.08f to "大", 1.16f to "特大").forEach { (v, label) ->
+                        FilterChip(selected = kotlin.math.abs(s.fontScale - v) < 0.01f, onClick = { s = s.copy(fontScale = v) }, label = { Text(label, fontSize = 10.sp) })
+                    }
+                }
+            }
+
+            Group("内容分级与同意记录") {
+                Text("含病娇 / 囚禁 / 极限标签的人设，首次进入对话需确认已满 18 岁并同意虚构协议。", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                TextButton(onClick = {
+                    context.getSharedPreferences("consent", 0).edit().clear().apply()
+                    android.widget.Toast.makeText(context, "已清除全部同意记录，下次进入需重新确认", android.widget.Toast.LENGTH_SHORT).show()
+                }) { Text("清除同意记录", fontSize = 11.sp) }
+            }
+
             Group("外观") {
                 Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     FilterChip(selected = s.theme == "dark", onClick = { s = s.copy(theme = "dark") }, label = { Text("深色", fontSize = 11.sp) })

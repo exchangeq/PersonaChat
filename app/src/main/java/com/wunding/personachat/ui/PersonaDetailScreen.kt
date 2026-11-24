@@ -17,6 +17,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -46,13 +47,15 @@ import kotlinx.coroutines.withContext
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun PersonaDetailScreen(app: PersonaChatApp, packId: String, onBack: () -> Unit, onStartChat: (String) -> Unit) {
+fun PersonaDetailScreen(app: PersonaChatApp, packId: String, onBack: () -> Unit, onStartChat: (String) -> Unit, onOpenChats: () -> Unit = {}) {
     val scope = rememberCoroutineScope()
     val pack = remember(packId) { PackStore.list(app).firstOrNull { it.id == packId } }
     var openMain by remember { mutableStateOf(false) }
     var openExt by remember { mutableStateOf(false) }
     var openFiles by remember { mutableStateOf(false) }
     var confirmRemove by remember { mutableStateOf(false) }
+    var showConsent by remember { mutableStateOf(false) }
+    val context = androidx.compose.ui.platform.LocalContext.current
 
     Scaffold(
         topBar = {
@@ -108,15 +111,39 @@ fun PersonaDetailScreen(app: PersonaChatApp, packId: String, onBack: () -> Unit,
             }
 
             Spacer(Modifier.size(16.dp))
+            if (com.wunding.personachat.data.Consent.required(pack.name, pack.position, pack.fullText)) {
+                StatusPill("18+ · 需同意协议", MaterialTheme.colorScheme.error, Modifier.padding(bottom = 8.dp))
+            }
             Button(onClick = {
-                scope.launch {
+                val need = com.wunding.personachat.data.Consent.required(pack.name, pack.position, pack.fullText) &&
+                    !com.wunding.personachat.data.Consent.accepted(context, pack.name)
+                if (need) showConsent = true
+                else scope.launch {
                     val sid = withContext(Dispatchers.IO) { startSession(app, pack) }
                     onStartChat(sid)
                 }
             }, modifier = Modifier.fillMaxWidth()) { Text("开始新会话") }
+            OutlinedButton(onClick = onOpenChats, modifier = Modifier.fillMaxWidth()) { Text("查看对话 · 删除多余会话", fontSize = 12.sp) }
+            Spacer(Modifier.size(4.dp))
             TextButton(onClick = { confirmRemove = true }) { Text("从列表移除", fontSize = 11.5.sp, color = MaterialTheme.colorScheme.error) }
             Text("包内内容不可编辑、不可删除；移除只影响本地列表。", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 18.dp))
         }
+    }
+    if (showConsent) {
+        MatureConsentDialog(
+            personaName = pack?.name ?: "",
+            onAgree = {
+                pack?.let {
+                    com.wunding.personachat.data.Consent.accept(context, it.name)
+                    showConsent = false
+                    scope.launch {
+                        val sid = withContext(Dispatchers.IO) { startSession(app, it) }
+                        onStartChat(sid)
+                    }
+                }
+            },
+            onDecline = { showConsent = false },
+        )
     }
     if (confirmRemove) {
         androidx.compose.material3.AlertDialog(

@@ -77,6 +77,9 @@ interface PersonaDao {
     @Insert
     suspend fun addMessage(m: MessageEntity): Long
 
+    @Query("DELETE FROM messages WHERE sessionId = :sid AND id > :id")
+    suspend fun deleteAfter(sid: String, id: Long)
+
     @Query("DELETE FROM messages WHERE id = :id")
     suspend fun deleteMessage(id: Long)
 
