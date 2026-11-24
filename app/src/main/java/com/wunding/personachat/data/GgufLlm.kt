@@ -28,6 +28,9 @@ object GgufLlm {
     val isLoaded: Boolean get() = handle != 0L
     val path: String get() = loadedPath
 
+    /** 当前 GGUF 加载时使用的上下文窗口，用于给输出/人设分配预算。 */
+    fun contextLimit(): Int = if (handle != 0L) safeContext(loadedPath) else 0
+
     fun status(): String = when {
         handle != 0L -> "GGUF 已加载：" + loadedPath.substringAfterLast('/') + "（" + nativeInfo(handle) + "）"
         lastError.isNotBlank() -> lastError

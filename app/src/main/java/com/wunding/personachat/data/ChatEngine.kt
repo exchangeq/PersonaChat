@@ -15,6 +15,9 @@ import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 
 object ChatEngine {
+    /** 流结束原因是 length（输出被 max_tokens 截断）时发出的内部标记，不会显示给用户。 */
+    private const val FINISH_LENGTH = "\u0000A3LEN"
+
     @Volatile private var activeConn: HttpURLConnection? = null
 
     /** 停止生成时主动断开正在阻塞的 HTTP 请求，避免“点了停止还在等”。 */
@@ -58,12 +61,16 @@ object ChatEngine {
         flow {
             val fast = settings.fastMode
             val histN = if (fast) 6 else 16
-            val outTokens = if (fast) minOf(settings.maxTokens, 384) else settings.maxTokens
+            // 极速模式只压缩上下文，不再把输出硬砍到 384。角色长回复被截断，多半是这里造成的。
+            val outTokens = if (fast) settings.maxTokens.coerceIn(320, 2048) else settings.maxTokens.coerceIn(128, 4096)
             if (settings.backend == "device" && settings.localModelPath.endsWith(".gguf", true)) {
                 val msgs = history.takeLast(histN).map { (if (it.role == "user") "user" else "assistant") to it.content }
+                // 小上下文机型给输出留空间，避免 prompt 把窗口吃满后只吐半句。
+                val ctx = GgufLlm.contextLimit()
+                val localOut = if (ctx in 1..1024) minOf(outTokens, maxOf(160, ctx / 2)) else outTokens
                 GgufLlm.stream(
                     system, msgs, userText,
-                    maxTokens = outTokens,
+                    maxTokens = localOut,
                     temperature = settings.temperature,
                 ).collect { emit(it) }
                 return@flow
@@ -81,25 +88,74 @@ object ChatEngine {
             }
             var emitted = false
             var lastError: Exception? = null
+            var tokenField = "max_tokens"
             for (attempt in 0..2) {
                 if (attempt > 0) kotlinx.coroutines.delay(if (attempt == 1) 600L else 1500L)
                 try {
-                    requestFlow(settings, system, history, userText, streamMode = settings.stream || fast, maxTokens = outTokens, histN = histN).collect { chunk ->
-                        emitted = true
-                        emit(chunk)
+                    val full = StringBuilder()
+                    var truncated = false
+                    requestFlow(settings, system, history, userText, streamMode = settings.stream || fast, maxTokens = outTokens, histN = histN, tokenField = tokenField).collect { chunk ->
+                        if (chunk == FINISH_LENGTH) {
+                            truncated = true
+                        } else {
+                            emitted = true
+                            full.append(chunk)
+                            emit(chunk)
+                        }
+                    }
+                    // 输出到 max_tokens 被切断，或动作括号没闭合：带着已写内容再请求一次，从断点续写，最多两次。
+                    var round = 0
+                    var needContinue = truncated || hasUnclosedParen(full.toString())
+                    while (needContinue && full.isNotBlank() && round < 2) {
+                        round++
+                        needContinue = false
+                        val prior = full.toString()
+                        val contHistory = history + MessageEntity(
+                            sessionId = history.lastOrNull()?.sessionId ?: "",
+                            role = "user",
+                            content = userText,
+                            ts = System.currentTimeMillis(),
+                        ) + MessageEntity(
+                            sessionId = history.lastOrNull()?.sessionId ?: "",
+                            role = "assistant",
+                            content = prior,
+                            ts = System.currentTimeMillis(),
+                        )
+                        requestFlow(
+                            settings, system, contHistory,
+                            "接着上一段写完。不要重复已经写过的内容，不要解释，不要重新开场。",
+                            streamMode = settings.stream || fast,
+                            maxTokens = outTokens,
+                            histN = histN,
+                            tokenField = tokenField,
+                        ).collect { chunk ->
+                            if (chunk == FINISH_LENGTH) {
+                                needContinue = true
+                            } else {
+                                val clean = if (round == 1) trimOverlap(full.toString(), chunk) else chunk
+                                if (clean.isNotEmpty()) { full.append(clean); emit(clean) }
+                            }
+                        }
+                        if (hasUnclosedParen(full.toString())) needContinue = true
                     }
                     return@flow
                 } catch (e: kotlinx.coroutines.CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     lastError = e
+                    // 兼容 OpenAI 新推理模型：部分接口只认 max_completion_tokens。
+                    val msg = e.message.orEmpty()
+                    if (!emitted && tokenField == "max_tokens" && msg.contains("max_tokens", true)) {
+                        tokenField = "max_completion_tokens"
+                        continue
+                    }
                     // 已经吐过字就不再重试，避免重复内容
                     if (emitted) throw e
                 }
             }
             // 流式始终拿不到内容时，退回一次性请求再试一次
             runCatching {
-                val text = requestFlow(settings, system, history, userText, streamMode = false, maxTokens = outTokens, histN = histN).firstOrNull()
+                val text = requestFlow(settings, system, history, userText, streamMode = false, maxTokens = outTokens, histN = histN, tokenField = tokenField).firstOrNull()
                 if (!text.isNullOrBlank()) { emit(text); return@flow }
             }
             throw lastError ?: IllegalStateException("模型没有返回内容")
@@ -113,13 +169,14 @@ object ChatEngine {
         streamMode: Boolean,
         maxTokens: Int = 1024,
         histN: Int = 16,
+        tokenField: String = "max_tokens",
     ): Flow<String> = flow {
         val base = settings.baseUrl.trim().trimEnd('/')
         val url = if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
         val body = JSONObject().apply {
             put("model", settings.model.ifBlank { "llama3.1" })
             put("temperature", settings.temperature.toDouble())
-            put("max_tokens", maxTokens)
+            put(tokenField, maxTokens)
             put("stream", streamMode)
             put("messages", JSONArray().apply {
                 put(JSONObject().put("role", "system").put("content", system))
@@ -152,27 +209,51 @@ object ChatEngine {
                 java.util.zip.GZIPInputStream(rawIn) else rawIn
             if (!streamMode) {
                 val text = input.bufferedReader().readText()
-                val content = JSONObject(text).optJSONArray("choices")?.optJSONObject(0)
-                    ?.optJSONObject("message")?.optString("content").orEmpty()
-                if (content.isNotBlank()) emit(content) else throw IllegalStateException("模型没有返回内容")
+                val obj = runCatching { JSONObject(text) }.getOrNull()
+                    ?: throw IllegalStateException("接口返回不是 JSON：${text.take(80)}")
+                val choice = obj.optJSONArray("choices")?.optJSONObject(0)
+                val content = sseText(obj).ifBlank {
+                    contentOf(choice?.optJSONObject("message")?.opt("content"))
+                }
+                if (content.isBlank()) {
+                    val apiErr = obj.optJSONObject("error")?.optString("message").orEmpty()
+                    throw IllegalStateException(apiErr.ifBlank { "模型没有返回内容" })
+                }
+                emit(content)
+                val reason = finishReason(obj)
+                if (reason == "length" || reason == "max_tokens") emit(FINISH_LENGTH)
                 return@flow
             }
             val reader: BufferedReader = input.bufferedReader()
             var got = false
-            reader.lineSequence().forEach { line ->
+            var finish: String? = null
+            // 不用 lineSequence：收到 [DONE] 要能立刻 break，否则有的服务端不关连接，会一直等到超时。
+            while (true) {
                 kotlinx.coroutines.currentCoroutineContext().ensureActive()
+                val line = reader.readLine() ?: break
                 val t = line.trim()
-                if (t.startsWith("data:")) {
-                    val payload = t.removePrefix("data:").trim()
-                    if (payload != "[DONE]") {
-                        runCatching {
-                            JSONObject(payload).optJSONArray("choices")?.optJSONObject(0)
-                                ?.optJSONObject("delta")?.optString("content")
-                        }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { emit(it); got = true }
-                    }
+                if (t.isEmpty() || t.startsWith(":")) continue
+                if (t.startsWith("event:")) continue
+                if (!t.startsWith("data:")) continue
+                val payload = t.removePrefix("data:").trim()
+                if (payload == "[DONE]") break
+                val obj = runCatching { JSONObject(payload) }.getOrNull() ?: continue
+                val choice = obj.optJSONArray("choices")?.optJSONObject(0)
+                val delta = contentOf(choice?.optJSONObject("delta")?.opt("content"))
+                if (delta.isNotEmpty()) {
+                    emit(delta); got = true
+                } else {
+                    // 兼容 Ollama / 部分代理：正文放在 choices[0].text、message.content 或根 response。
+                    val fallback = contentOf(choice?.opt("text"))
+                        .ifBlank { contentOf(obj.optJSONObject("message")?.opt("content")) }
+                        .ifBlank { contentOf(obj.opt("response")) }
+                    if (fallback.isNotEmpty()) { emit(fallback); got = true }
                 }
+                val fr = finishReason(obj)
+                if (fr.isNotBlank()) finish = fr
             }
             if (!got) throw IllegalStateException("模型返回为空，检查模型名或接口地址")
+            if (finish == "length" || finish == "max_tokens") emit(FINISH_LENGTH)
         } catch (e: SocketTimeoutException) {
             throw IllegalStateException("连接超时：本地模型可能没启动，或地址/端口不对")
         } catch (e: UnknownHostException) {
@@ -181,6 +262,49 @@ object ChatEngine {
             if (activeConn === conn) activeConn = null
             conn.disconnect()
         }
+    }
+
+    /** 括号动作没闭合，通常说明回复在网络/输出上限处被切断。 */
+    private fun hasUnclosedParen(text: String): Boolean {
+        if (text.isBlank()) return false
+        val open = text.count { it == '（' || it == '(' }
+        val close = text.count { it == '）' || it == ')' }
+        return open > close
+    }
+
+    /** 续写时模型常把上一段末尾重复一遍，按最长后缀/前缀重合裁掉。 */
+    private fun trimOverlap(prior: String, next: String): String {
+        if (prior.isEmpty() || next.isEmpty()) return next
+        val max = minOf(24, prior.length, next.length)
+        for (k in max downTo 4) {
+            if (prior.takeLast(k) == next.take(k)) return next.substring(k)
+        }
+        return next
+    }
+
+    /** 兼容 string / array / object 三种 content 形态。 */
+    private fun contentOf(v: Any?): String = when (v) {
+        null, JSONObject.NULL -> ""
+        is String -> v
+        is JSONArray -> (0 until v.length()).joinToString("") { contentOf(v.opt(it)) }
+        is JSONObject -> v.optString("text").ifBlank { v.optString("content") }
+        else -> ""
+    }
+
+    private fun sseText(obj: JSONObject): String {
+        val choice = obj.optJSONArray("choices")?.optJSONObject(0)
+        return contentOf(choice?.optJSONObject("delta")?.opt("content"))
+            .ifBlank { contentOf(choice?.opt("text")) }
+            .ifBlank { contentOf(obj.optJSONObject("message")?.opt("content")) }
+            .ifBlank { contentOf(obj.opt("response")) }
+    }
+
+    private fun finishReason(obj: JSONObject): String {
+        val choice = obj.optJSONArray("choices")?.optJSONObject(0)
+        val r = choice?.optString("finish_reason").orEmpty()
+        if (r.isNotBlank() && r != "null") return r
+        val d = obj.optString("done_reason").orEmpty()
+        return if (d.isNotBlank() && d != "null") d else ""
     }
 
     private fun describe(code: Int, err: String): String = when (code) {
